@@ -1,0 +1,21 @@
+{
+  "manifest_version": 2,
+
+  "name": "chrome-mpris2",
+  "description": "Implements the MPRIS2 interface for Chrome.",
+  "version": "0.1",
+
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "content_scripts": [{
+    "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
+    "js": ["providers/youtube.js"],
+    "run_at": "document_start"
+  }],
+
+  "permissions": [
+    "nativeMessaging"
+  ]
+}

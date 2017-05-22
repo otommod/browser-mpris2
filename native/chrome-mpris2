@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+
+import struct
+import sys
+import json
+
+from gi.repository import GLib
+
+import pydbus
+
+
+def make_streams_binary():
+    sys.stdin = sys.stdin.detach()
+    sys.stdout = sys.stdout.detach()
+
+
+def parse_message():
+    stdin = sys.stdin
+
+    # Read the message length (first 4 bytes).
+    length_bytes = stdin.read(4)
+    if not len(length_bytes):
+        sys.exit(0)
+
+    # Unpack message length as 4 byte integer.
+    length = struct.unpack('@i', length_bytes)[0]
+
+    # Read the text (JSON object) of the message.
+    text = stdin.read(length).decode("utf-8")
+    return json.loads(text)
+
+
+def iter_messages():
+    while True:
+        yield parse_message()
+
+
+class MediaPlayer2:
+    """
+    <node name="/Media_Player" xmlns:tp="http://telepathy.freedesktop.org/wiki/DbusSpec#extensions-v0">
+    <interface name="org.mpris.MediaPlayer2">
+        <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+
+        <method name="Raise">
+        </method>
+
+        <method name="Quit">
+        </method>
+
+        <property name="CanQuit" type="b" access="read">
+        </property>
+
+        <property name="Fullscreen" type="b" access="readwrite">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+
+        <property name="CanSetFullscreen" type="b" access="read">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+
+        <property name="CanRaise" type="b" access="read">
+        </property>
+
+        <property name="HasTrackList" type="b" access="read">
+        </property>
+
+        <property name="Identity" type="s" access="read">
+        </property>
+
+        <property name="DesktopEntry" type="s" access="read">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+
+        <property name="SupportedUriSchemes" type="as" access="read">
+        </property>
+
+        <property name="SupportedMimeTypes" type="as" access="read">
+        </property>
+    </interface>
+    <interface name="org.mpris.MediaPlayer2.Player">
+        <property name="Metadata" type="a{sv}" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true" />
+        </property>
+    </interface>
+    </node>
+    """
+
+    def __init__(self):
+        self.CanRaise = False
+        self.CanQuit = False
+        self.Fullscreen = False
+        self.CanSetFullscreen = False
+
+        self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
+        self.SupportedMimeTypes = [
+            "audio/mpeg",
+            "audio/x-flac",
+            # TODO: add more
+        ]
+
+        self._metadata = None
+
+    PropertiesChanged = pydbus.generic.signal()
+
+    def Raise(self):
+        pass
+
+    def Quit(self):
+        pass
+
+    @property
+    def Metadata(self):
+        return self._metadata
+
+    @Metadata.setter
+    def Metadata(self, value):
+        self._metadata = value
+        self.PropertiesChanged("org.mpris.MediaPlayer2.Player",
+                               {"Metadata": self._metadata},
+                               [])
+
+
+def main():
+    make_streams_binary()
+
+    playing = {}
+    for msg in iter_messages():
+        video = msg['video']
+        playing[video['id']] = video
+        if video['state'] == 'destroyed':
+            del playing[video['id']]
+
+        print(str(video), file=sys.stderr, flush=True)
+        with open('/tmp/musicd-chrome', 'w') as fp:
+            title = video['title'] if 'title' in video else ''
+            fp.write(video['state'] + ' ' + title)
+        with open('/tmp/musicd-chrome.json', 'w') as fp:
+            info = list(playing.values())
+            json.dump(info, fp, indent=4)
+
+
+if __name__ == '__main__':
+    mainloop = GLib.MainLoop()
+    make_streams_binary()
+
+    with open("/tmp/musicd-chrome.exc", "a") as f:
+        f.write("Starting\n")
+
+    player = MediaPlayer2()
+
+    bus = pydbus.SessionBus()
+    bus.publish("org.mpris.MediaPlayer2.chrome",
+                ("/org/mpris/MediaPlayer2", player))
+
+    def watchfunc(chan, condition):
+        msg = parse_message()
+
+        player.Metadata = {
+            "id": pydbus.Variant("s", msg["video"]["id"]),
+            "title": pydbus.Variant("s", msg["video"]["title"]),
+            "duration": pydbus.Variant("d", msg["video"]["duration"]),
+        }
+
+        with open("/tmp/musicd-chrome", "w") as f:
+            json.dump(msg, f)
+
+        return True
+
+    make_streams_binary()
+    chan = GLib.IOChannel.unix_new(sys.stdin.fileno())
+    chan.add_watch(GLib.IOCondition.IN, watchfunc)
+    # MainLoop.quit doesn't like being given extra arguments
+    chan.add_watch(GLib.IOCondition.HUP, lambda *_: mainloop.quit())
+
+    mainloop.run()
+
+    with open("/tmp/musicd-chrome.exc", "a") as f:
+        f.write("Killing\n")
