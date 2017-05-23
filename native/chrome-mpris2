@@ -29,6 +29,18 @@ def parse_message():
     text = stdin.read(length).decode("utf-8")
     return json.loads(text)
 
+def send_message(msg):
+    stdout = sys.stdout
+
+    try:
+        text = json.dumps(msg)
+    except ValueError:
+        return 0
+
+    data = text.encode("utf-8")
+    length_bytes = struct.pack("@i", len(data))
+    return stdout.write(length_bytes) + stdout.write(data)
+
 
 def iter_messages():
     while True:
@@ -37,7 +49,7 @@ def iter_messages():
 
 class MediaPlayer2:
     """
-    <node name="/Media_Player" xmlns:tp="http://telepathy.freedesktop.org/wiki/DbusSpec#extensions-v0">
+    <node name="/Media_Player">
     <interface name="org.mpris.MediaPlayer2">
         <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
 
@@ -67,9 +79,11 @@ class MediaPlayer2:
         <property name="Identity" type="s" access="read">
         </property>
 
+        <!--
         <property name="DesktopEntry" type="s" access="read">
             <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
+        -->
 
         <property name="SupportedUriSchemes" type="as" access="read">
         </property>
@@ -77,19 +91,136 @@ class MediaPlayer2:
         <property name="SupportedMimeTypes" type="as" access="read">
         </property>
     </interface>
+
     <interface name="org.mpris.MediaPlayer2.Player">
+
+        <method name="Next">
+        </method>
+
+        <method name="Previous">
+        </method>
+
+        <method name="Pause">
+        </method>
+
+        <method name="PlayPause">
+        </method>
+
+        <method name="Stop">
+        </method>
+
+        <method name="Play">
+        </method>
+
+        <method name="Seek">
+            <arg direction="in" type="x" name="Offset">
+            </arg>
+        </method>
+
+        <method name="SetPosition">
+            <arg direction="in" type="o" name="TrackId">
+            </arg>
+            <arg direction="in" type="x" name="Position">
+            </arg>
+        </method>
+
+        <method name="OpenUri">
+            <arg direction="in" type="s" name="Uri">
+            </arg>
+        </method>
+
+        <property name="PlaybackStatus" type="s" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="LoopStatus" type="s" access="readwrite">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+
+        <property name="Rate" type="d" access="readwrite">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="Shuffle" type="b" access="readwrite">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+
         <property name="Metadata" type="a{sv}" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="Volume" type="d" access="readwrite">
             <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true" />
         </property>
+
+        <property name="Position" type="x" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+        </property>
+
+        <property name="MinimumRate" type="d" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="MaximumRate" type="d" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="CanGoNext" type="b" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="CanGoPrevious" type="b" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="CanPlay" type="b" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="CanPause" type="b" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="CanSeek" type="b" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
+        </property>
+
+        <property name="CanControl" type="b" access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+        </property>
+
+        <signal name="Seeked">
+            <arg name="Position" type="x">
+            </arg>
+        </signal>
+
     </interface>
     </node>
     """
 
-    def __init__(self):
+    def __init__(self, tabid):
+        self._tabid = tabid
+
+        self.Identity = "youtube"
+        self.HasTrackList = False
+
         self.CanRaise = False
         self.CanQuit = False
         self.Fullscreen = False
         self.CanSetFullscreen = False
+
+        self.CanControl = True
+        self.CanGoNext = False
+        self.CanGoPrevious = False
+        self.CanPlay = True
+        self.CanPause = True
+        self.CanSeek = True
+
+        self.MinimumRate = 1
+        self.MaximumRate = 1
+        self.Rate = 1
 
         self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
         self.SupportedMimeTypes = [
@@ -98,9 +229,16 @@ class MediaPlayer2:
             # TODO: add more
         ]
 
-        self._metadata = None
+        self.PlaybackStatus = "stopped"
+        self.Metadata = {}
+        self.Position = 0
+        self.Volume = 1
+
+        self.Shuffle = False
+        self.LoopStatus = "None"
 
     PropertiesChanged = pydbus.generic.signal()
+    Seeked = pydbus.generic.signal()
 
     def Raise(self):
         pass
@@ -108,16 +246,33 @@ class MediaPlayer2:
     def Quit(self):
         pass
 
-    @property
-    def Metadata(self):
-        return self._metadata
+    def Play(self):
+        self._send_message({ "cmd": "play" })
 
-    @Metadata.setter
-    def Metadata(self, value):
-        self._metadata = value
-        self.PropertiesChanged("org.mpris.MediaPlayer2.Player",
-                               {"Metadata": self._metadata},
-                               [])
+    def Pause(self):
+        self._send_message({ "cmd": "pause" })
+
+    def PlayPause(self):
+        self._send_message({ "cmd": "playpause" })
+
+    def Stop(self):
+        self._send_message({ "cmd": "stop" })
+
+    def Seek(self, offset):
+        self._send_message({ "cmd": "seek", "data": { "offset": offset } })
+
+    def Next(self):
+        self._send_message({ "cmd": "next" })
+
+    def Previous(self):
+        self._send_message({ "cmd": "prev" })
+
+    def _send_message(self, msg):
+        msg["tabId"] = self._tabid
+        send_message(msg)
+
+    def _emit_changed(self, changed):
+        self.PropertiesChanged("org.mpris.MediaPlayer2.Player", changed, [])
 
 
 def main():
@@ -146,20 +301,46 @@ if __name__ == '__main__':
     with open("/tmp/musicd-chrome.exc", "a") as f:
         f.write("Starting\n")
 
-    player = MediaPlayer2()
-
     bus = pydbus.SessionBus()
-    bus.publish("org.mpris.MediaPlayer2.chrome",
-                ("/org/mpris/MediaPlayer2", player))
+    # bus.publish("org.mpris.MediaPlayer2.chrome",
+    #             ("/org/mpris/MediaPlayer2", player))
+
+    players = {}
 
     def watchfunc(chan, condition):
         msg = parse_message()
+        print(msg, file=sys.stderr, flush=True)
 
-        player.Metadata = {
-            "id": pydbus.Variant("s", msg["video"]["id"]),
-            "title": pydbus.Variant("s", msg["video"]["title"]),
-            "duration": pydbus.Variant("d", msg["video"]["duration"]),
-        }
+        if msg["tabId"] not in players:
+            player = MediaPlayer2(msg["tabId"])
+            players[msg["tabId"]] = player
+            bus.publish("org.mpris.MediaPlayer2.chrome",
+                        ("/org/mpris/MediaPlayer2", player))
+
+        player = players[msg["tabId"]]
+
+        if msg["type"] == "change":
+            # player.Metadata.update(msg["data"])
+            for key, value in msg["data"].items():
+                if key == "url":
+                    player.Metadata["xesam:url"] = pydbus.Variant("s", value)
+                elif key == "thumb":
+                    player.Metadata["mpris:artUrl"] = pydbus.Variant("s", value)
+                elif key == "title":
+                    player.Metadata["xesam:title"] = pydbus.Variant("s", value)
+
+            player._emit_changed({"Metadata": player.Metadata})
+
+        if msg["type"] == "update":
+            if "state" in msg["data"]:
+                player.PlaybackStatus = msg["data"]["state"]
+                player._emit_changed({"PlaybackStatus": player.PlaybackStatus})
+            elif "volume" in msg["data"]:
+                player.Volume = msg["data"]["volume"]
+                player._emit_changed({"Volume": player.Volume})
+            elif "duration" in msg["data"]:
+                player.Metadata["mpris:length"] = pydbus.Variant("x", msg["data"]["duration"])
+                player._emit_changed({"Metadata": player.Metadata})
 
         with open("/tmp/musicd-chrome", "w") as f:
             json.dump(msg, f)
