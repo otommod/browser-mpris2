@@ -197,6 +197,32 @@ class MediaPlayer2:
         </signal>
 
     </interface>
+
+    <!--
+ <interface name="org.freedesktop.DBus.Properties">
+    <method name="Get">
+      <arg type="s" name="interface_name" direction="in"/>
+      <arg type="s" name="property_name" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <method name="GetAll">
+      <arg type="s" name="interface_name" direction="in"/>
+      <arg type="a{sv}" name="properties" direction="out"/>
+    </method>
+
+    <method name="Set">
+      <arg type="s" name="interface_name" direction="in"/>
+      <arg type="s" name="property_name" direction="in"/>
+      <arg type="v" name="value" direction="in"/>
+    </method>
+    <signal name="PropertiesChanged">
+      <arg type="s" name="interface_name"/>
+      <arg type="a{sv}" name="changed_properties"/>
+      <arg type="as" name="invalidated_properties"/>
+    </signal>
+  </interface>
+    -->
+
     </node>
     """
 
@@ -208,7 +234,7 @@ class MediaPlayer2:
 
         self.CanRaise = False
         self.CanQuit = False
-        self.Fullscreen = False
+        self._Fullscreen = False
         self.CanSetFullscreen = False
 
         self.CanControl = True
@@ -231,11 +257,44 @@ class MediaPlayer2:
 
         self.PlaybackStatus = "stopped"
         self.Metadata = {}
-        self.Position = 0
-        self.Volume = 1
+        self._Position = 0
+        self._Volume = 1
 
         self.Shuffle = False
-        self.LoopStatus = "None"
+        self._LoopStatus = "None"
+
+    @property
+    def Fullscreen(self):
+        return self._Fullscreen
+
+    @Fullscreen.setter
+    def Fullscreen(self, value):
+        self._send_message({ "cmd": "fullscreen", "data": value })
+
+    @property
+    def Volume(self):
+        return self._Volume
+
+    @Volume.setter
+    def Volume(self, value):
+        self._send_message({ "cmd": "volume", "data": value })
+
+    @property
+    def Position(self):
+        # FIXME: major hack
+        self._send_message({ "cmd": "query", "data": "position" })
+        reply = parse_message()
+        if reply["type"] == "update" and "position" in reply["data"]:
+            self._Position = reply["data"]["position"]
+        return self._Position
+
+    @property
+    def LoopStatus(self):
+        return self._LoopStatus
+
+    @LoopStatus.setter
+    def LoopStatus(self, value):
+        self._send_message({ "cmd": "loop", "data": value })
 
     PropertiesChanged = pydbus.generic.signal()
     Seeked = pydbus.generic.signal()
@@ -307,40 +366,80 @@ if __name__ == '__main__':
 
     players = {}
 
+    def apply_message(player, msg):
+        changes = []
+
+        for key, val in msg["data"].items():
+            if key == "url":
+                player.Metadata["xesam:url"] = pydbus.Variant("s", val)
+                changes.append("Metadata")
+            elif key == "thumb":
+                player.Metadata["mpris:artUrl"] = pydbus.Variant("s", val)
+                changes.append("Metadata")
+            elif key == "title":
+                player.Metadata["xesam:title"] = pydbus.Variant("s", val)
+                changes.append("Metadata")
+            elif key == "duration":
+                player.Metadata["mpris:length"] = pydbus.Variant("x", val)
+                changes.append("Metadata")
+
+            elif key == "hasNext":
+                player.CanGoNext = val
+                changes.append("CanGoNext")
+            elif key == "hasPrev":
+                player.CanGoPrevious = val
+                changes.append("CanGoPrevious")
+
+            elif key == "state":
+                player.PlaybackStatus = val
+                changes.append("PlaybackStatus")
+            elif key == "volume":
+                player._Volume = val
+                changes.append("Volume")
+            elif key == "loop":
+                player._LoopStatus = val
+                changes.append("LoopStatus")
+            elif key == "fullscreen":
+                player._Fullscreen = val
+                # Fullscreen is an org.mpris.MediaPlayer2 property
+                player.PropertiesChanged("org.mpris.MediaPlayer2",
+                                         {"Fullscreen": player.Fullscreen},
+                                         [])
+
+            elif key == "position":
+                player._Position = val
+                # Position should *not* emit a Changed signal
+
+        if changes:
+            player._emit_changed({n: getattr(player, n) for n in changes})
+
+
     def watchfunc(chan, condition):
         msg = parse_message()
         print(msg, file=sys.stderr, flush=True)
 
+        if msg["type"] not in ("change", "update", "quit"):
+            return True
+
         if msg["tabId"] not in players:
             player = MediaPlayer2(msg["tabId"])
-            players[msg["tabId"]] = player
-            bus.publish("org.mpris.MediaPlayer2.chrome",
-                        ("/org/mpris/MediaPlayer2", player))
+            players[msg["tabId"]] = (
+                player,
+                bus.publish("org.mpris.MediaPlayer2.chrome",
+                            ("/org/mpris/MediaPlayer2", player)),
+            )
 
-        player = players[msg["tabId"]]
+        player = players[msg["tabId"]][0]
 
         if msg["type"] == "change":
-            # player.Metadata.update(msg["data"])
-            for key, value in msg["data"].items():
-                if key == "url":
-                    player.Metadata["xesam:url"] = pydbus.Variant("s", value)
-                elif key == "thumb":
-                    player.Metadata["mpris:artUrl"] = pydbus.Variant("s", value)
-                elif key == "title":
-                    player.Metadata["xesam:title"] = pydbus.Variant("s", value)
-
-            player._emit_changed({"Metadata": player.Metadata})
+            apply_message(player, msg)
 
         if msg["type"] == "update":
-            if "state" in msg["data"]:
-                player.PlaybackStatus = msg["data"]["state"]
-                player._emit_changed({"PlaybackStatus": player.PlaybackStatus})
-            elif "volume" in msg["data"]:
-                player.Volume = msg["data"]["volume"]
-                player._emit_changed({"Volume": player.Volume})
-            elif "duration" in msg["data"]:
-                player.Metadata["mpris:length"] = pydbus.Variant("x", msg["data"]["duration"])
-                player._emit_changed({"Metadata": player.Metadata})
+            apply_message(player, msg)
+
+        if msg["type"] == "quit":
+            players[msg["tabId"]][1].unpublish()
+            del players[msg["tabId"]]
 
         with open("/tmp/musicd-chrome", "w") as f:
             json.dump(msg, f)

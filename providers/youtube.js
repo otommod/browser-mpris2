@@ -37,10 +37,25 @@ function handler(e) {
         //     break;
 
         case "durationchange":
-            update({duration: e.target.duration * 1e6});
+            update({duration: Math.trunc(e.target.duration * 1e6)});
             break;
     }
 }
+
+class EventObserver {
+    constructor(element, event, handler) {
+        this.element = element;
+        this.event = event;
+        this.handler = handler
+
+        element.addEventListener(event, this.handler);
+    }
+
+    disconnect() {
+        this.element.removeEventListener(this.event, this.handler);
+    }
+}
+
 
 function enterVideo() {
     let video = {
@@ -50,7 +65,13 @@ function enterVideo() {
         thumb: document.querySelector("[itemprop=thumbnailUrl]").href,
     };
 
-    let playlist = {};
+    // document.addEventListener("webkitfullscreenchange", e => {
+    observers.push(new EventObserver(document, "webkitfullscreenchange", e => {
+        // We'll assume that it's the video that was made fullscreen.
+        update({ fullscreen: !!document.webkitFullscreenElement });
+    }));
+
+    playlist = {};
 
     // Playlist related
     let pl = document.querySelector("#player-playlist"),
@@ -69,10 +90,43 @@ function enterVideo() {
 
     videoElement = document.querySelector("video");
     EVENTS.forEach(function(event) {
-        videoElement.addEventListener(event, handler);
+        observers.push(new EventObserver(videoElement, event, handler));
     });
 
-    video.volume = videoElement.volume;
+    function loopStatus() {
+        if (videoElement.hasAttribute("loop"))
+            return "Track";
+        if (playlist.content.length && playlistLooping)
+            return "Playlist";
+        return "None";
+    }
+
+    var loopButton = document.querySelector(".toggle-loop");
+    if (loopButton) {
+        observers.push(new EventObserver(loopButton, "click", () => {
+            playlistLooping = !playlistLooping
+            update({ loop: loopStatus() });
+        }));
+    }
+
+    var loopObserver = new MutationObserver(muts => {
+        muts.forEach(m => update({ loop: loopStatus() }));
+    });
+    loopObserver.observe(videoElement, {
+        attributes: true,
+        subtree: false,
+        attributeFilter: ["loop"],
+    });
+    // observers.push(loopObserver);
+
+    video.loop = loopStatus();
+
+    // It looks like YouTube does not always set the volume of the video
+    // element to 1, even if the player says that it is max.  Since they
+    // probably have a good reason to do that, let's not fuck things up by
+    // setting it too high, even if the user requested it.  In order to do
+    // that, we're always gon' lie!
+    video.volume = 1;
 
     video.hasNext = playlist.content.length && playlist.index < playlist.content.length - 1;
     video.hasPrev = playlist.content.length && playlist.index > 0;
@@ -87,13 +141,23 @@ function exitVideo() {
         source: "youtube", type: "quit",
     });
 
-    EVENTS.forEach(function(event) {
-        videoElement.removeEventListener(event, handler);
-    });
+    observers.forEach(obs => obs.disconnect());
+    observers = [];
+
     videoElement = null;
+    playlist = {};
+    playlistLooping = false;
 }
 
 const COMMANDS = {
+    query(attr) {
+        switch (attr) {
+        case "position":
+            update({ position: Math.trunc(videoElement.currentTime * 1e6) });
+            break;
+        }
+    },
+
     play() {
         if (videoElement) videoElement.play();
     },
@@ -118,6 +182,28 @@ const COMMANDS = {
     },
     prev() {
         COMMANDS.playAt(playlist.index - 1);
+    },
+
+    volume() { },
+    fullscreen() { },
+
+    loop(how) {
+        if (!videoElement) return;
+        switch (how) {
+        case "Track":
+            videoElement.loop = true;
+            break;
+        case "None":
+            if (playlistLooping)
+                document.querySelector(".toggle-loop").click();
+            videoElement.loop = false;
+            break;
+        case "Playlist":
+            if (!playlistLooping)
+                document.querySelector(".toggle-loop").click();
+            videoElement.loop = false;
+            break;
+        }
     }
 }
 
@@ -129,9 +215,15 @@ function update(change) {
 
 
 var port = chrome.runtime.connect();
-port.onMessage.addListener(({ cmd, data }) => {COMMANDS[cmd](data); console.log(cmd, data); });
+port.onMessage.addListener(({ cmd, data }) => {
+    console.log("COMMAND", cmd);
+    COMMANDS[cmd](data);
+});
 
 var videoElement;
+var observers = [];
+var playlist;
+var playlistLooping = false;
 
 // document.addEventListener("DOMContentLoaded", function() {
 //     if (isVideo()) enterVideo();
@@ -175,12 +267,18 @@ document.addEventListener("spfrequest", e => {
 
     if (prevUrl.pathname.startsWith("/watch") && !nextUrl.pathname.startsWith("/watch"))
         exitVideo();
+
+    observers.forEach(obs => obs.disconnect());
+    observers = [];
 });
 
 document.addEventListener("spfdone", process);
 document.addEventListener("DOMContentLoaded", process);
 
-function process(event) {
+function process(e) {
+        port.postMessage({
+            source: "youtube", type: e.type, url: location.href//, data: e.detail,
+        });
     if (!location.pathname.startsWith("/watch"))
         return;
 

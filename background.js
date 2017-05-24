@@ -6,8 +6,6 @@ chrome.runtime.onConnect.addListener(function(port) {
         programPort = chrome.runtime.connectNative("org.mpris.chrome_host");
 
     function passMessage(msg) {
-        console.log("Got port = " + JSON.stringify(port));
-        console.log("Got msg = " + JSON.stringify(msg));
         if (msg.tabId == port.sender.tab.id || msg.tabId < 0)
             port.postMessage(msg);
     };
