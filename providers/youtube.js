@@ -1,45 +1,35 @@
 "use strict";
 
-const EVENTS = [
-    "play",           // playback of the media starts after having been paused
-    "playing",        // playback begins for the first time, unpauses or restarts
-    "pause",          // playback is paused
-    "ended",          // playback completes
-    "volumechange",   // when the audio volume changes or is muted
-    "timeupdate",     // the element's `currentTime' attribute has changed
-    "durationchange", // a change in the duration of the media
+const EVENTHNANDLERS = {
+    // playback of the media starts after having been paused
+    play()    { update({state: "Playing"}); },
+    // playback begins for the first time, unpauses or restarts
+    playing() { update({state: "Playing"}); },
+    // playback is paused
+    pause() { update({state: "Paused"}); },
+    // playback completes
+    ended() { update({state: "Stopped"}); },
 
-];
+    // when the audio volume changes or is muted
+    volumechange(e) { update({volume: e.target.muted ? 0.0 : e.target.volume}); },
+
+    // a change in the duration of the media
+    durationchange(e) { update({duration: Math.trunc(e.target.duration * 1e6)}); },
+
+    // the element's `currentTime' attribute has changed
+    // timeupdate(e) { update({position: e.target.currentTime}); },
+};
 
 function isVideo() {
     return window.location.pathname.startsWith("/watch");
 }
 
-function handler(e) {
-    switch (e.type) {
-        case "play":
-        case "playing":
-            update({state: "Playing"});
-            break;
-        case "pause":
-            update({state: "Paused"});
-            break;
-        case "ended":
-            update({state: "Stopped"});
-            break;
-
-        case "volumechange":
-            update({volume: e.target.muted ? 0.0 : e.target.volume})
-            break;
-
-        // case "timeupdate":
-        //     update({position: e.target.currentTime});
-        //     break;
-
-        case "durationchange":
-            update({duration: Math.trunc(e.target.duration * 1e6)});
-            break;
-    }
+function loopStatus() {
+    if (videoElement.hasAttribute("loop"))
+        return "Track";
+    if (playlist.content.length && playlistLooping)
+        return "Playlist";
+    return "None";
 }
 
 class EventObserver {
@@ -89,27 +79,18 @@ function enterVideo() {
     playlist.index = playlist.content.map(v => v.id).indexOf(video.id);
 
     videoElement = document.querySelector("video");
-    EVENTS.forEach(function(event) {
-        observers.push(new EventObserver(videoElement, event, handler));
-    });
+    for (let [ev, handler] of Object.keys(EVENTHNANDLERS))
+        observers.push(new EventObserver(videoElement, ev, handler));
 
-    function loopStatus() {
-        if (videoElement.hasAttribute("loop"))
-            return "Track";
-        if (playlist.content.length && playlistLooping)
-            return "Playlist";
-        return "None";
-    }
-
-    var loopButton = document.querySelector(".toggle-loop");
-    if (loopButton) {
+    if (playlist.content.length) {
+        let loopButton = document.querySelector(".toggle-loop");
         observers.push(new EventObserver(loopButton, "click", () => {
             playlistLooping = !playlistLooping
             update({ loop: loopStatus() });
         }));
     }
 
-    var loopObserver = new MutationObserver(muts => {
+    const loopObserver = new MutationObserver(muts => {
         muts.forEach(m => update({ loop: loopStatus() }));
     });
     loopObserver.observe(videoElement, {
@@ -117,7 +98,7 @@ function enterVideo() {
         subtree: false,
         attributeFilter: ["loop"],
     });
-    // observers.push(loopObserver);
+    observers.push(loopObserver);
 
     video.loop = loopStatus();
 
@@ -133,7 +114,7 @@ function enterVideo() {
 
     port.postMessage({
         source: "youtube", type: "change", data: video
-    })
+    });
 }
 
 function exitVideo() {
@@ -190,22 +171,51 @@ const COMMANDS = {
     loop(how) {
         if (!videoElement) return;
         switch (how) {
-        case "Track":
-            videoElement.loop = true;
-            break;
         case "None":
-            if (playlistLooping)
-                document.querySelector(".toggle-loop").click();
-            videoElement.loop = false;
+            setLoopPlaylist(false);
+            setLoopTrack(false);
             break;
+
+        case "Track":
+            setLoopTrack(true);
+            break;
+
         case "Playlist":
-            if (!playlistLooping)
-                document.querySelector(".toggle-loop").click();
-            videoElement.loop = false;
+            if (!playlist.content.length)
+                return;
+            setLoopPlaylist(true);
+            setLoopTrack(false);
             break;
         }
     }
 }
+
+function setLoopTrack(loop) {
+    if (!videoElement) return;
+
+    // if what we want to happen is already happening we're done
+    if (!!loop == videoElement.hasAttribute("loop"))
+        return;
+
+    const e = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        buttons: 2
+    });
+
+    // fake right click for the menu to show up
+    videoElement.dispatchEvent(e);
+    // then click on the "Loop" button
+    document.querySelector("[role=menuitemcheckbox]").click();
+}
+
+function setLoopPlaylist(loop) {
+    // only if our looping status differs from the requested should we click
+    if (!loop != !playlistLooping)
+        document.querySelector(".toggle-loop").click();
+}
+
 
 function update(change) {
     port.postMessage({
@@ -225,37 +235,6 @@ var observers = [];
 var playlist;
 var playlistLooping = false;
 
-// document.addEventListener("DOMContentLoaded", function() {
-//     if (isVideo()) enterVideo();
-
-//     // Install a MutationObserver to track page changes.
-//     // YouTube doesn't play fair, you never really navigate from page to page,
-//     // it just changes the DOM in-place, using spfjs.  A page change is
-//     // indicated by the change of the `data-spf-name` attribute of the body.
-//     var observer = new MutationObserver(function(mutations) {
-//         mutations.forEach(function(mutation) {
-//             // Navigated away from a video page.
-//             // if (mutation.oldValue == "watch")
-//             //     exitVideo();
-
-//             // By the time the mutation is fired, window.location has already
-//             // been changed to that of the new page, so the following correctly
-//             // identifies if the new page is a video or not.
-//             if (isVideo())
-//                 enterVideo();
-//         });
-//     });
-//     observer.observe(document.body, {
-//         attributes: true,                   // observe mutations to attributes
-//         attributeOldValue: true,            // include old attribute value
-//         subtree: false,                     // don't observe descendants
-//         attributeFilter: ["data-spf-name"]  // only observe these attributes
-//     });
-// });
-window.addEventListener("unload", function() {
-    if (isVideo()) exitVideo();
-});
-
 // https://youtube.github.io/spfjs/documentation/events/
 
 document.addEventListener("spfrequest", e => {
@@ -272,9 +251,6 @@ document.addEventListener("spfrequest", e => {
     observers = [];
 });
 
-document.addEventListener("spfdone", process);
-document.addEventListener("DOMContentLoaded", process);
-
 function process(e) {
         port.postMessage({
             source: "youtube", type: e.type, url: location.href//, data: e.detail,
@@ -284,3 +260,10 @@ function process(e) {
 
     enterVideo();
 }
+
+document.addEventListener("spfdone", process);
+document.addEventListener("DOMContentLoaded", process);
+
+window.addEventListener("unload", function() {
+    if (isVideo()) exitVideo();
+});
