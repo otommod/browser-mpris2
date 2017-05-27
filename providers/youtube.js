@@ -1,37 +1,5 @@
 "use strict";
 
-const EVENTHNANDLERS = {
-    // playback of the media starts after having been paused
-    play()    { update({state: "Playing"}); },
-    // playback begins for the first time, unpauses or restarts
-    playing() { update({state: "Playing"}); },
-    // playback is paused
-    pause() { update({state: "Paused"}); },
-    // playback completes
-    ended() { update({state: "Stopped"}); },
-
-    // when the audio volume changes or is muted
-    volumechange(e) { update({volume: e.target.muted ? 0.0 : e.target.volume}); },
-
-    // a change in the duration of the media
-    durationchange(e) { update({duration: Math.trunc(e.target.duration * 1e6)}); },
-
-    // the element's `currentTime' attribute has changed
-    // timeupdate(e) { update({position: e.target.currentTime}); },
-};
-
-function isVideo() {
-    return window.location.pathname.startsWith("/watch");
-}
-
-function loopStatus() {
-    if (videoElement.hasAttribute("loop"))
-        return "Track";
-    if (playlist.content.length && playlistLooping)
-        return "Playlist";
-    return "None";
-}
-
 class EventObserver {
     constructor(element, event, handler) {
         this.element = element;
@@ -47,6 +15,48 @@ class EventObserver {
 }
 
 
+const EVENTS = {
+    // playback of the media starts after having been paused
+    play()    { update({state: "Playing"}); },
+    // playback begins for the first time, unpauses or restarts
+    playing() { update({state: "Playing"}); },
+    // playback is paused
+    pause() { update({state: "Paused"}); },
+    // playback completes
+    ended() { update({state: "Stopped"}); },
+
+    // when the playback speed changes
+    ratechange(e) { update({ rate: e.target.playbackRate }); },
+
+    // when the audio volume changes or is muted
+    volumechange(e) { update({volume: e.target.muted ? 0.0 : e.target.volume}); },
+
+    // a change in the duration of the media
+    durationchange(e) { update({duration: Math.trunc(e.target.duration * 1e6)}); },
+
+    // when a seek operation completes
+    // TODO: it seems that YouTube is "sending" too many seeked events e.g.,
+    // according to mpris Playing from the beginning after being Stopped should
+    // not be considered a Seek, yet YouTube does send a seeked event and we
+    // propagate that to DBus as well
+    seeked(e) { update({seekedTo: Math.trunc(e.target.currentTime * 1e6)}); },
+
+    // the element's `currentTime' attribute has changed
+    // timeupdate(e) { update({position: e.target.currentTime}); },
+};
+
+function isVideo(url) {
+    return (url || location).pathname.startsWith("/watch");
+}
+
+function loopStatus() {
+    if (videoElement.hasAttribute("loop"))
+        return "Track";
+    if (playlist.content.length && playlistLooping)
+        return "Playlist";
+    return "None";
+}
+
 function enterVideo() {
     let video = {
         id: document.querySelector("[itemprop=videoId]").content,
@@ -55,7 +65,6 @@ function enterVideo() {
         thumb: document.querySelector("[itemprop=thumbnailUrl]").href,
     };
 
-    // document.addEventListener("webkitfullscreenchange", e => {
     observers.push(new EventObserver(document, "webkitfullscreenchange", e => {
         // We'll assume that it's the video that was made fullscreen.
         update({ fullscreen: !!document.webkitFullscreenElement });
@@ -79,14 +88,20 @@ function enterVideo() {
     playlist.index = playlist.content.map(v => v.id).indexOf(video.id);
 
     videoElement = document.querySelector("video");
-    for (let [ev, handler] of Object.keys(EVENTHNANDLERS))
-        observers.push(new EventObserver(videoElement, ev, handler));
+    for (let [event, handler] of Object.entries(EVENTS))
+        observers.push(new EventObserver(videoElement, event, handler));
 
     if (playlist.content.length) {
-        let loopButton = document.querySelector(".toggle-loop");
+        const loopButton = document.querySelector(".toggle-loop");
         observers.push(new EventObserver(loopButton, "click", () => {
             playlistLooping = !playlistLooping
             update({ loop: loopStatus() });
+        }));
+
+        const shuffleButton = document.querySelector(".shuffle-playlist");
+        observers.push(new EventObserver(shuffleButton, "click", () => {
+            playlistShuffling = !playlistShuffling
+            update({ shuffle: playlistShuffling });
         }));
     }
 
@@ -101,6 +116,7 @@ function enterVideo() {
     observers.push(loopObserver);
 
     video.loop = loopStatus();
+    video.shuffle = playlistShuffling;
 
     // It looks like YouTube does not always set the volume of the video
     // element to 1, even if the player says that it is max.  Since they
@@ -111,6 +127,12 @@ function enterVideo() {
 
     video.hasNext = playlist.content.length && playlist.index < playlist.content.length - 1;
     video.hasPrev = playlist.content.length && playlist.index > 0;
+
+    video.rate = videoElement.playbackRate;
+
+    // TODO: these belong elsewhere
+    video.minRate = 0.25;
+    video.maxRate = 2;
 
     port.postMessage({
         source: "youtube", type: "change", data: video
@@ -128,6 +150,7 @@ function exitVideo() {
     videoElement = null;
     playlist = {};
     playlistLooping = false;
+    playlistShuffling = false;
 }
 
 const COMMANDS = {
@@ -155,19 +178,42 @@ const COMMANDS = {
     },
 
     playAt(index) {
-        var v = playlist.content[index];
-        if (v) v.link.click();
+        if (playlist.content.length > index) {
+            let v = playlist.content[index];
+            if (v) v.link.click();
+        }
     },
     next() {
-        COMMANDS.playAt(playlist.index + 1);
+        this.playAt(playlist.index + 1);
     },
     prev() {
-        COMMANDS.playAt(playlist.index - 1);
+        this.playAt(playlist.index - 1);
+    },
+
+    seekBy(offset) {
+        if (!videoElement) return;
+        videoElement.currentTime += offset / 1e6;
+        if (videoElement.currentTime >= videoElement.duration)
+            this.next();
+    },
+    setPosition({ id, position }) {
+        // TODO: perhaps store the ID somewhere?
+        if (videoElement && id === document.querySelector("[itemprop=videoId]").content)
+            videoElement.currentTime = position / 1e6;
+    },
+
+    rate(what) {
+        if (videoElement && what > 0) setPlaybackRate(what);
     },
 
     volume() { },
     fullscreen() { },
 
+    shuffle(yes) {
+        if (!videoElement) return;
+        if (!yes !== !playlistShuffling)
+            document.querySelector(".shuffle-playlist").click();
+    },
     loop(how) {
         if (!videoElement) return;
         switch (how) {
@@ -207,13 +253,48 @@ function setLoopTrack(loop) {
     // fake right click for the menu to show up
     videoElement.dispatchEvent(e);
     // then click on the "Loop" button
-    document.querySelector("[role=menuitemcheckbox]").click();
+    document.querySelector(".ytp-contextmenu .ytp-menuitem:nth-child(4)").click();
 }
 
 function setLoopPlaylist(loop) {
+    if (!videoElement) return;
+
     // only if our looping status differs from the requested should we click
     if (!loop != !playlistLooping)
         document.querySelector(".toggle-loop").click();
+}
+
+function setPlaybackRate(rate) {
+    if (!videoElement) return;
+
+    let closestRate = Math.ceil(rate * 4);
+    // first make the settings menu appear
+    document.querySelector(".ytp-settings-button").click();
+    // then the "speed" menu
+    document.querySelector(".ytp-settings-menu .ytp-menuitem:nth-child(3)").click();
+
+    setTimeout(() => {
+        document.querySelector(`.ytp-settings-menu .ytp-menuitem:nth-child(${closestRate})`).click();
+        // and close the settings menu again
+        setTimeout(() => document.querySelector(".ytp-settings-button").click(), 300);
+    }, 300);
+
+    // var obs = new MutationObserver(function(ms) {
+    //     ms.forEach(function(m) {
+    //         if (m.oldValue.includes("ytp-popup-animating")) {
+    //         }
+    //     });
+    // });
+
+    // obs.observe(document.querySelector(".ytp-settings-menu"), {
+    //      attributes: true,                   // observe mutations to attributes
+    //      attributeOldValue: true,            // include old attribute value
+    //      subtree: false,                     // don't observe descendants
+    //      attributeFilter: ["class"]  // only observe these attributes
+    //  });
+
+    // and finally select the appropriate "speed"
+    // document.querySelector(`.ytp-settings-menu .ytp-menuitem:nth-child(${closestRate})`).click();
 }
 
 
@@ -224,7 +305,7 @@ function update(change) {
 }
 
 
-var port = chrome.runtime.connect();
+const port = chrome.runtime.connect();
 port.onMessage.addListener(({ cmd, data }) => {
     console.log("COMMAND", cmd);
     COMMANDS[cmd](data);
@@ -234,31 +315,36 @@ var videoElement;
 var observers = [];
 var playlist;
 var playlistLooping = false;
+var playlistShuffling = false;
 
 // https://youtube.github.io/spfjs/documentation/events/
 
 document.addEventListener("spfrequest", e => {
-        port.postMessage({
-            source: "youtube", type: e.type, data: e.detail,
-        });
+    port.postMessage({
+        source: "youtube", type: e.type, data: e.detail,
+    });
+
     const prevUrl = new URL(e.detail.previous);
     const nextUrl = new URL(e.detail.url);
 
-    if (prevUrl.pathname.startsWith("/watch") && !nextUrl.pathname.startsWith("/watch"))
+    if (isVideo(prevUrl) && !isVideo(nextUrl))
         exitVideo();
+
+    if (isVideo(prevUrl) && isVideo(nextUrl) && prevUrl.searchParams.get("list") !== nextUrl.searchParams.get("list")) {
+        playlistLooping = false;
+        playlistShuffling = false;
+    }
 
     observers.forEach(obs => obs.disconnect());
     observers = [];
 });
 
 function process(e) {
-        port.postMessage({
-            source: "youtube", type: e.type, url: location.href//, data: e.detail,
-        });
-    if (!location.pathname.startsWith("/watch"))
-        return;
+    port.postMessage({
+        source: "youtube", type: e.type, url: location.href
+    });
 
-    enterVideo();
+    if (isVideo()) enterVideo();
 }
 
 document.addEventListener("spfdone", process);

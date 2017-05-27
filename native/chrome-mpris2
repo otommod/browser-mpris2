@@ -152,7 +152,7 @@ class MediaPlayer2:
         </property>
 
         <property name="Volume" type="d" access="readwrite">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true" />
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
         </property>
 
         <property name="Position" type="x" access="read">
@@ -197,32 +197,6 @@ class MediaPlayer2:
         </signal>
 
     </interface>
-
-    <!--
- <interface name="org.freedesktop.DBus.Properties">
-    <method name="Get">
-      <arg type="s" name="interface_name" direction="in"/>
-      <arg type="s" name="property_name" direction="in"/>
-      <arg type="v" name="value" direction="out"/>
-    </method>
-    <method name="GetAll">
-      <arg type="s" name="interface_name" direction="in"/>
-      <arg type="a{sv}" name="properties" direction="out"/>
-    </method>
-
-    <method name="Set">
-      <arg type="s" name="interface_name" direction="in"/>
-      <arg type="s" name="property_name" direction="in"/>
-      <arg type="v" name="value" direction="in"/>
-    </method>
-    <signal name="PropertiesChanged">
-      <arg type="s" name="interface_name"/>
-      <arg type="a{sv}" name="changed_properties"/>
-      <arg type="as" name="invalidated_properties"/>
-    </signal>
-  </interface>
-    -->
-
     </node>
     """
 
@@ -246,7 +220,7 @@ class MediaPlayer2:
 
         self.MinimumRate = 1
         self.MaximumRate = 1
-        self.Rate = 1
+        self._Rate = 1
 
         self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
         self.SupportedMimeTypes = [
@@ -260,7 +234,7 @@ class MediaPlayer2:
         self._Position = 0
         self._Volume = 1
 
-        self.Shuffle = False
+        self._Shuffle = False
         self._LoopStatus = "None"
 
     @property
@@ -296,6 +270,22 @@ class MediaPlayer2:
     def LoopStatus(self, value):
         self._send_message({ "cmd": "loop", "data": value })
 
+    @property
+    def Shuffle(self):
+        return self._Shuffle
+
+    @Shuffle.setter
+    def Shuffle(self, value):
+        self._send_message({ "cmd": "shuffle", "data": value })
+
+    @property
+    def Rate(self):
+        return self._Rate
+
+    @Rate.setter
+    def Rate(self, value):
+        self._send_message({ "cmd": "rate", "data": value })
+
     PropertiesChanged = pydbus.generic.signal()
     Seeked = pydbus.generic.signal()
 
@@ -318,7 +308,15 @@ class MediaPlayer2:
         self._send_message({ "cmd": "stop" })
 
     def Seek(self, offset):
-        self._send_message({ "cmd": "seek", "data": { "offset": offset } })
+        self._send_message({ "cmd": "seekBy", "data": offset })
+
+    def SetPosition(self, trackid, position):
+        if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
+            self._send_message({"cmd": "setPosition",
+                                "data": {"id": trackid[4:],
+                                         "position": position
+                                         }
+                                })
 
     def Next(self):
         self._send_message({ "cmd": "next" })
@@ -370,7 +368,10 @@ if __name__ == '__main__':
         changes = []
 
         for key, val in msg["data"].items():
-            if key == "url":
+            if key == "id":
+                player.Metadata["mpris:trackid"] = pydbus.Variant("o", "/ID/" + val)
+                changes.append("Metadata")
+            elif key == "url":
                 player.Metadata["xesam:url"] = pydbus.Variant("s", val)
                 changes.append("Metadata")
             elif key == "thumb":
@@ -390,12 +391,26 @@ if __name__ == '__main__':
                 player.CanGoPrevious = val
                 changes.append("CanGoPrevious")
 
+            # TODO: these may need to go elsewhere
+            elif key == "maxRate":
+                player.MaximumRate = val
+                changes.append("MaximumRate")
+            elif key == "minRate":
+                player.MinimumRate = val
+                changes.append("MinimumRate")
+
+            elif key == "rate":
+                player._Rate = val
+                changes.append("Rate")
             elif key == "state":
                 player.PlaybackStatus = val
                 changes.append("PlaybackStatus")
             elif key == "volume":
                 player._Volume = val
                 changes.append("Volume")
+            elif key == "shuffle":
+                player._Shuffle = val
+                changes.append("Shuffle")
             elif key == "loop":
                 player._LoopStatus = val
                 changes.append("LoopStatus")
@@ -405,6 +420,8 @@ if __name__ == '__main__':
                 player.PropertiesChanged("org.mpris.MediaPlayer2",
                                          {"Fullscreen": player.Fullscreen},
                                          [])
+            elif key == "seekedTo":
+                player.Seeked(val)
 
             elif key == "position":
                 player._Position = val
