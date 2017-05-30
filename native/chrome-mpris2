@@ -53,31 +53,22 @@ class MediaPlayer2:
     <interface name="org.mpris.MediaPlayer2">
         <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
 
-        <method name="Raise">
-        </method>
+        <method name="Raise"/>
+        <method name="Quit"/>
 
-        <method name="Quit">
-        </method>
+        <property name="CanRaise" type="b" access="read"/>
+        <property name="CanQuit" type="b" access="read"/>
 
-        <property name="CanQuit" type="b" access="read">
+        <property name="CanSetFullscreen" type="b" access="read">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
 
         <property name="Fullscreen" type="b" access="readwrite">
             <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
 
-        <property name="CanSetFullscreen" type="b" access="read">
-            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
-        </property>
-
-        <property name="CanRaise" type="b" access="read">
-        </property>
-
-        <property name="HasTrackList" type="b" access="read">
-        </property>
-
-        <property name="Identity" type="s" access="read">
-        </property>
+        <property name="HasTrackList" type="b" access="read"/>
+        <property name="Identity" type="s" access="read"/>
 
         <!--
         <property name="DesktopEntry" type="s" access="read">
@@ -85,48 +76,31 @@ class MediaPlayer2:
         </property>
         -->
 
-        <property name="SupportedUriSchemes" type="as" access="read">
-        </property>
-
-        <property name="SupportedMimeTypes" type="as" access="read">
-        </property>
+        <property name="SupportedUriSchemes" type="as" access="read"/>
+        <property name="SupportedMimeTypes" type="as" access="read"/>
     </interface>
 
     <interface name="org.mpris.MediaPlayer2.Player">
 
-        <method name="Next">
-        </method>
+        <method name="Play"/>
+        <method name="Pause"/>
+        <method name="PlayPause"/>
+        <method name="Stop"/>
 
-        <method name="Previous">
-        </method>
-
-        <method name="Pause">
-        </method>
-
-        <method name="PlayPause">
-        </method>
-
-        <method name="Stop">
-        </method>
-
-        <method name="Play">
-        </method>
+        <method name="Next"/>
+        <method name="Previous"/>
 
         <method name="Seek">
-            <arg direction="in" type="x" name="Offset">
-            </arg>
+            <arg direction="in" type="x" name="Offset"/>
         </method>
 
         <method name="SetPosition">
-            <arg direction="in" type="o" name="TrackId">
-            </arg>
-            <arg direction="in" type="x" name="Position">
-            </arg>
+            <arg direction="in" type="o" name="TrackId"/>
+            <arg direction="in" type="x" name="Position"/>
         </method>
 
         <method name="OpenUri">
-            <arg direction="in" type="s" name="Uri">
-            </arg>
+            <arg direction="in" type="s" name="Uri"/>
         </method>
 
         <property name="PlaybackStatus" type="s" access="read">
@@ -192,8 +166,7 @@ class MediaPlayer2:
         </property>
 
         <signal name="Seeked">
-            <arg name="Position" type="x">
-            </arg>
+            <arg name="Position" type="x"/>
         </signal>
 
     </interface>
