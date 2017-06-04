@@ -7,6 +7,24 @@ import sys
 from gi.repository import Gio, GLib
 
 
+def debug(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def escape_object_path(objpath):
+    # We basically URI escape but instead of % we use _
+    return (GLib.uri_escape_string(objpath, None, False)
+            .replace(".", "%2E")
+            .replace("-", "%2D")
+            .replace("~", "%7E")
+            .replace("_", "%5F")
+            .replace("%", "_"))
+
+
+def unescape_object_path(objpath):
+    return GLib.uri_unescape_string(objpath.replace("_", "%"))
+
+
 def make_streams_binary():
     sys.stdin = sys.stdin.detach()
     sys.stdout = sys.stdout.detach()
@@ -40,49 +58,75 @@ def encode_msg(msg):
 
 class DBusService:
     def __init__(self, conn, path):
-        self.__reg_ids = []
-        self.__conn = conn
+        self._conn = conn
 
-        method_outargs = {}
-        method_inargs = {}
+        self.__reg_ids = []
+        self._method_outargs = {}
+        self._method_inargs = {}
         self._readable_props = {}
         self._writable_props = {}
 
         node_info = Gio.DBusNodeInfo.new_for_xml(self.__doc__)
         for iface in node_info.interfaces:
-            # FIXME: keep the interface name too, for each property and method
-            # so that we can check that people are calling us correctly
+            method_inargs = self._method_inargs.setdefault(iface.name, {})
+            method_outargs = self._method_outargs.setdefault(iface.name, {})
             for method in iface.methods:
                 method_outargs[method.name] = "(%s)" % "".join(
                     arg.signature for arg in method.out_args)
                 method_inargs[method.name] = tuple(
                     arg.signature for arg in method.in_args)
 
+            readable_props = self._readable_props.setdefault(iface.name, {})
+            writable_props = self._writable_props.setdefault(iface.name, {})
             for prop in iface.properties:
                 if prop.flags & Gio.DBusPropertyInfoFlags.READABLE:
-                    self._readable_props[prop.name] = prop.signature
+                    readable_props[prop.name] = prop.signature
                 if prop.flags & Gio.DBusPropertyInfoFlags.WRITABLE:
-                    self._writable_props[prop.name] = prop.signature
+                    writable_props[prop.name] = prop.signature
 
             self.__reg_ids.append(
-            conn.register_object(object_path=path,
-                                 interface_info=iface,
-                                 method_call_closure=self.on_method_call,
-                                 get_property_closure=self.on_get_property)
+                self._conn.register_object(path, iface, self.on_method_call)
             )
 
-        self._method_inargs = method_inargs
-        self._method_outargs = method_outargs
+            self._method_inargs["org.freedesktop.DBus.Properties"] = {
+                "Get": "ss",
+                "GetAll": "s",
+                "Set": "ssv",
+            }
+            self._method_outargs["org.freedesktop.DBus.Properties"] = {
+                "Get": "(v)",
+                "GetAll": "(a{sv})",
+                "Set": "()",
+            }
 
     def unpublish(self):
         for i in self.__reg_ids:
-            self.__conn.unregister_object(i)
-        Gio.bus_unown_name(self._own_id)
+            self._conn.unregister_object(i)
 
     def on_method_call(self, conn, sender, objpath, iface_name, method_name,
                        params, invocation):
+
+        method_inargs = self._method_inargs[iface_name]
+        method_outargs = self._method_outargs[iface_name]
+
+        # FIXME: move somewhere else
+        if (objpath == "/org/mpris/MediaPlayer2"
+                and iface_name == "org.freedesktop.DBus.Properties"
+                and method_name == "Get"
+                and params[0] == "org.mpris.MediaPlayer2.Player"
+                and params[1] == "Position"):
+            self._get_position(invocation)
+            return
+
+        if (objpath == "/org/mpris/MediaPlayer2"
+                and iface_name == "org.freedesktop.DBus.Properties"
+                and method_name == "GetAll"
+                and params[0] == "org.mpris.MediaPlayer2.Player"):
+            self._get_position_and_all(invocation)
+            return
+
         args = list(params.unpack())
-        for i, sig in enumerate(self._method_inargs[method_name]):
+        for i, sig in enumerate(method_inargs[method_name]):
             if sig is "h":
                 msg = invocation.get_message()
                 fd_list = msg.get_unix_fd_list()
@@ -96,19 +140,20 @@ class DBusService:
             # Refer to https://bugzilla.gnome.org/show_bug.cgi?id=765603
             res = (res,)
 
-            out_args = self._method_outargs[method_name]
+            out_args = method_outargs[method_name]
             if out_args != "()":
                 variant = GLib.Variant(out_args, res)
                 invocation.return_value(variant)
             else:
                 invocation.return_value(None)
-        except:
-            pass
 
-    def on_get_property(self, conn, sender, objpath, iface, prop_name):
-        typ = self._readable_props[prop_name]
-        prop = getattr(self, prop_name)
-        return GLib.Variant(typ, prop)
+        except Exception as e:
+            # TODO: Think of a better way to translate Python exception types
+            # to DBus error types.
+            e_type = type(e).__name__
+            if "." not in e_type:
+                e_type = "unknown." + e_type
+            invocation.return_dbus_error(e_type, str(e))
 
 
 class MirroredProperty:
@@ -250,6 +295,7 @@ class MediaPlayer2(DBusService):
 
     def __init__(self, tabid, name, objpath):
         self._tabid = tabid
+        self.__callbacks = {}
 
         self.CanRaise = False
         self.CanQuit = False
@@ -270,11 +316,10 @@ class MediaPlayer2(DBusService):
         self._Shuffle = False
         self._LoopStatus = "None"
 
-        self.__bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        # FIXME: find some other way to share the unowing id
-        self._own_id = Gio.bus_own_name_on_connection(self.__bus, name,
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+        self._own_id = Gio.bus_own_name_on_connection(bus, name,
                                                       Gio.BusNameOwnerFlags.NONE)
-        super().__init__(self.__bus, objpath)
+        super().__init__(bus, objpath)
 
     Fullscreen = MirroredProperty("Fullscreen")
     Volume = MirroredProperty("Volume")
@@ -282,28 +327,36 @@ class MediaPlayer2(DBusService):
     Shuffle = MirroredProperty("Shuffle")
     Rate = MirroredProperty("Rate")
 
-    @property
-    def Position(self):
-        # FIXME: major hack
+    def _get_position(self, invocation):
         self._send_message("query", "position")
-        reply = decode_msg()
-        if reply["type"] == "update" and "position" in reply["data"]:
-            self._Position = reply["data"]["position"]
-        return self._Position
+        self._set_callback_on("position", lambda p:
+                              invocation.return_value(
+                                  GLib.Variant("(v)", (GLib.Variant("x", p),))
+                              ))
 
-    # PropertiesChanged = pydbus.generic.signal()
-    # Seeked = pydbus.generic.signal()
+    # FIXME:
+    def _get_position_and_all(self, invocation):
+        everything_else = self.GetAll("org.mpris.MediaPlayer2.Player")
+
+        def inject_position(pos):
+            everything_else["Position"] = GLib.Variant("x", pos)
+            invocation.return_value(GLib.Variant("(a{sv})", (everything_else,)))
+
+        self._send_message("query", "position")
+        self._set_callback_on("position", inject_position)
+
+    def _set_callback_on(self, prop, callback):
+        self.__callbacks.setdefault(prop, []).append(callback)
 
     # SIGNALS
     def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
-
         typed_changed_props = {}
         for p, value in changed_props.items():
-            # FIXME: assume that it's at least readable
-            typ = self._readable_props[p]
+            # FIXME: we assume that it's at least readable, will it always be?
+            typ = self._readable_props[iface_name][p]
             typed_changed_props[p] = GLib.Variant(typ, value)
 
-        self.__bus.emit_signal(
+        self._conn.emit_signal(
             None,
             "/org/mpris/MediaPlayer2",
             "org.freedesktop.DBus.Properties",
@@ -314,7 +367,7 @@ class MediaPlayer2(DBusService):
                 GLib.Variant("as", invalidated_props)))
 
     def Seeked(self, position):
-        self.__bus.emit_signal(
+        self._conn.emit_signal(
             None,
             # FIXME: don't hardcode these
             "/org/mpris/MediaPlayer2",
@@ -323,6 +376,20 @@ class MediaPlayer2(DBusService):
             GLib.Variant.new_tuple(GLib.Variant("x", position)))
 
     # METHODS
+    def Get(self, iface_name, prop_name):
+        typ = self._readable_props[iface_name][prop_name]
+        prop = getattr(self, prop_name)
+        return GLib.Variant(typ, prop)
+
+    # FIXME:
+    def GetAll(self, iface_name):
+        iface_props = self._readable_props[iface_name]
+        return {p: self.Get(iface_name, p) for p in iface_props if p != "Position"}
+
+    def Set(self, iface_name, prop_name, value):
+        self._writable_properties[iface_name][prop_name]
+        setattr(self.object, prop_name, value)
+
     def Raise(self):
         pass
 
@@ -349,14 +416,19 @@ class MediaPlayer2(DBusService):
 
     def SetPosition(self, trackid, position):
         if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
+            ytid = unescape_object_path(trackid[4:])
             self._send_message("SetPosition",
-                               {"id": trackid, "position": position})
+                               {"id": ytid, "position": position})
 
     def Next(self):
         self._send_message("Next")
 
     def Previous(self):
         self._send_message("Prev")
+
+    def unpublish(self):
+        super().unpublish()
+        Gio.bus_unown_name(self._own_id)
 
     def _send_message(self, cmd, data=None):
         msg = {
@@ -381,7 +453,8 @@ class MediaPlayer2(DBusService):
 
         for key, val in msg["data"].items():
             if key == "id":
-                self.Metadata["mpris:trackid"] = GLib.Variant("o", "/ID/" + val)
+                track_path = "/ID/" + escape_object_path(val)
+                self.Metadata["mpris:trackid"] = GLib.Variant("o", track_path)
                 changes.append("Metadata")
             elif key == "url":
                 self.Metadata["xesam:url"] = GLib.Variant("s", val)
@@ -409,6 +482,11 @@ class MediaPlayer2(DBusService):
             else:
                 setattr(self, key, val)
                 changes.append(key)
+
+            if key in self.__callbacks:
+                for cb in self.__callbacks[key]:
+                    cb(val)
+                del self.__callbacks[key]
 
         if changes:
             self._emit_changed(changes)
@@ -461,7 +539,7 @@ def main():
 
     def message_handler(chan, condition):
         msg = decode_msg()
-        print(msg, file=sys.stderr, flush=True)
+        debug(msg)
 
         if msg["type"] not in ("change", "update", "quit"):
             return True
