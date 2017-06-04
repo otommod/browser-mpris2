@@ -17,19 +17,19 @@ class EventObserver {
 
 const EVENTS = {
     // playback of the media starts after having been paused
-    play()    { update({state: "Playing"}); },
+    play()    { update({PlaybackStatus: "Playing"}); },
     // playback begins for the first time, unpauses or restarts
-    playing() { update({state: "Playing"}); },
+    playing() { update({PlaybackStatus: "Playing"}); },
     // playback is paused
-    pause() { update({state: "Paused"}); },
+    pause() { update({PlaybackStatus: "Paused"}); },
     // playback completes
-    ended() { update({state: "Stopped"}); },
+    ended() { update({PlaybackStatus: "Stopped"}); },
 
     // when the playback speed changes
-    ratechange(e) { update({ rate: e.target.playbackRate }); },
+    ratechange(e) { update({ Rate: e.target.playbackRate }); },
 
     // when the audio volume changes or is muted
-    volumechange(e) { update({volume: e.target.muted ? 0.0 : e.target.volume}); },
+    volumechange(e) { update({Volume: e.target.muted ? 0.0 : e.target.volume}); },
 
     // a change in the duration of the media
     durationchange(e) { update({duration: Math.trunc(e.target.duration * 1e6)}); },
@@ -67,7 +67,7 @@ function enterVideo() {
 
     observers.push(new EventObserver(document, "webkitfullscreenchange", e => {
         // We'll assume that it's the video that was made fullscreen.
-        update({ fullscreen: !!document.webkitFullscreenElement });
+        update({ Fullscreen: !!document.webkitFullscreenElement });
     }));
 
     playlist = {};
@@ -95,18 +95,18 @@ function enterVideo() {
         const loopButton = document.querySelector(".toggle-loop");
         observers.push(new EventObserver(loopButton, "click", () => {
             playlistLooping = !playlistLooping
-            update({ loop: loopStatus() });
+            update({ LoopStatus: loopStatus() });
         }));
 
         const shuffleButton = document.querySelector(".shuffle-playlist");
         observers.push(new EventObserver(shuffleButton, "click", () => {
             playlistShuffling = !playlistShuffling
-            update({ shuffle: playlistShuffling });
+            update({ Shuffle: playlistShuffling });
         }));
     }
 
     const loopObserver = new MutationObserver(muts => {
-        muts.forEach(m => update({ loop: loopStatus() }));
+        muts.forEach(m => update({ LoopStatus: loopStatus() }));
     });
     loopObserver.observe(videoElement, {
         attributes: true,
@@ -115,24 +115,20 @@ function enterVideo() {
     });
     observers.push(loopObserver);
 
-    video.loop = loopStatus();
-    video.shuffle = playlistShuffling;
+    video.LoopStatus = loopStatus();
+    video.Shuffle = playlistShuffling;
 
     // It looks like YouTube does not always set the volume of the video
     // element to 1, even if the player says that it is max.  Since they
     // probably have a good reason to do that, let's not fuck things up by
     // setting it too high, even if the user requested it.  In order to do
     // that, we're always gon' lie!
-    video.volume = 1;
+    video.Volume = 1;
 
-    video.hasNext = playlist.content.length && playlist.index < playlist.content.length - 1;
-    video.hasPrev = playlist.content.length && playlist.index > 0;
+    video.CanGoNext = playlist.content.length && playlist.index < playlist.content.length - 1;
+    video.CanGoPrevious = playlist.content.length && playlist.index > 0;
 
-    video.rate = videoElement.playbackRate;
-
-    // TODO: these belong elsewhere
-    video.minRate = 0.25;
-    video.maxRate = 2;
+    video.Rate = videoElement.playbackRate;
 
     port.postMessage({
         source: "youtube", type: "change", data: video
@@ -162,18 +158,18 @@ const COMMANDS = {
         }
     },
 
-    play() {
+    Play() {
         if (videoElement) videoElement.play();
     },
-    pause() {
+    Pause() {
         if (videoElement) videoElement.pause();
     },
-    playpause() {
+    PlayPause() {
         if (!videoElement) return;
         if (videoElement.paused || videoElement.ended) videoElement.play();
         else videoElement.pause();
     },
-    stop() {
+    Stop() {
         if (videoElement) videoElement.currentTime = videoElement.duration;
     },
 
@@ -183,38 +179,38 @@ const COMMANDS = {
             if (v) v.link.click();
         }
     },
-    next() {
+    Next() {
         this.playAt(playlist.index + 1);
     },
-    prev() {
+    Prev() {
         this.playAt(playlist.index - 1);
     },
 
-    seekBy(offset) {
+    Seek(offset) {
         if (!videoElement) return;
         videoElement.currentTime += offset / 1e6;
         if (videoElement.currentTime >= videoElement.duration)
             this.next();
     },
-    setPosition({ id, position }) {
+    SetPosition({ id, position }) {
         // TODO: perhaps store the ID somewhere?
         if (videoElement && id === document.querySelector("[itemprop=videoId]").content)
             videoElement.currentTime = position / 1e6;
     },
 
-    rate(what) {
+    Rate(what) {
         if (videoElement && what > 0) setPlaybackRate(what);
     },
 
-    volume() { },
-    fullscreen() { },
+    Volume() { },
+    Fullscreen() { },
 
-    shuffle(yes) {
+    Shuffle(yes) {
         if (!videoElement) return;
         if (!yes !== !playlistShuffling)
             document.querySelector(".shuffle-playlist").click();
     },
-    loop(how) {
+    LoopStatus(how) {
         if (!videoElement) return;
         switch (how) {
         case "None":

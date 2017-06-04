@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 
+import json
 import struct
 import sys
-import json
 
-from gi.repository import GLib
-
-import pydbus
+from gi.repository import Gio, GLib
 
 
 def make_streams_binary():
@@ -14,24 +12,22 @@ def make_streams_binary():
     sys.stdout = sys.stdout.detach()
 
 
-def parse_message():
-    stdin = sys.stdin
-
+def decode_msg():
     # Read the message length (first 4 bytes).
-    length_bytes = stdin.read(4)
+    length_bytes = sys.stdin.read(4)
     if not len(length_bytes):
+        # FIXME:
         sys.exit(0)
 
     # Unpack message length as 4 byte integer.
     length = struct.unpack('@i', length_bytes)[0]
 
     # Read the text (JSON object) of the message.
-    text = stdin.read(length).decode("utf-8")
+    text = sys.stdin.read(length).decode("utf-8")
     return json.loads(text)
 
-def send_message(msg):
-    stdout = sys.stdout
 
+def encode_msg(msg):
     try:
         text = json.dumps(msg)
     except ValueError:
@@ -39,15 +35,94 @@ def send_message(msg):
 
     data = text.encode("utf-8")
     length_bytes = struct.pack("@i", len(data))
-    return stdout.write(length_bytes) + stdout.write(data)
+    return sys.stdout.write(length_bytes) + sys.stdout.write(data)
 
 
-def iter_messages():
-    while True:
-        yield parse_message()
+class DBusService:
+    def __init__(self, conn, path):
+        self.__reg_ids = []
+        self.__conn = conn
+
+        method_outargs = {}
+        method_inargs = {}
+        self._readable_props = {}
+        self._writable_props = {}
+
+        node_info = Gio.DBusNodeInfo.new_for_xml(self.__doc__)
+        for iface in node_info.interfaces:
+            # FIXME: keep the interface name too, for each property and method
+            # so that we can check that people are calling us correctly
+            for method in iface.methods:
+                method_outargs[method.name] = "(%s)" % "".join(
+                    arg.signature for arg in method.out_args)
+                method_inargs[method.name] = tuple(
+                    arg.signature for arg in method.in_args)
+
+            for prop in iface.properties:
+                if prop.flags & Gio.DBusPropertyInfoFlags.READABLE:
+                    self._readable_props[prop.name] = prop.signature
+                if prop.flags & Gio.DBusPropertyInfoFlags.WRITABLE:
+                    self._writable_props[prop.name] = prop.signature
+
+            self.__reg_ids.append(
+            conn.register_object(object_path=path,
+                                 interface_info=iface,
+                                 method_call_closure=self.on_method_call,
+                                 get_property_closure=self.on_get_property)
+            )
+
+        self._method_inargs = method_inargs
+        self._method_outargs = method_outargs
+
+    def unpublish(self):
+        for i in self.__reg_ids:
+            self.__conn.unregister_object(i)
+        Gio.bus_unown_name(self._own_id)
+
+    def on_method_call(self, conn, sender, objpath, iface_name, method_name,
+                       params, invocation):
+        args = list(params.unpack())
+        for i, sig in enumerate(self._method_inargs[method_name]):
+            if sig is "h":
+                msg = invocation.get_message()
+                fd_list = msg.get_unix_fd_list()
+                args[i] = fd_list.get(args[i])
+
+        try:
+            res = getattr(self, method_name)(*args)
+
+            # out_args is at least (sig)
+            # We therefore always wrap the result as a tuple.
+            # Refer to https://bugzilla.gnome.org/show_bug.cgi?id=765603
+            res = (res,)
+
+            out_args = self._method_outargs[method_name]
+            if out_args != "()":
+                variant = GLib.Variant(out_args, res)
+                invocation.return_value(variant)
+            else:
+                invocation.return_value(None)
+        except:
+            pass
+
+    def on_get_property(self, conn, sender, objpath, iface, prop_name):
+        typ = self._readable_props[prop_name]
+        prop = getattr(self, prop_name)
+        return GLib.Variant(typ, prop)
 
 
-class MediaPlayer2:
+class MirroredProperty:
+    def __init__(self, attrname):
+        self.attrname = attrname
+
+    def __get__(self, obj, objtype=None):
+        return getattr(obj, "_" + self.attrname)
+
+    def __set__(self, obj, value):
+        obj._send_message(self.attrname, value)
+
+
+class MediaPlayer2(DBusService):
     """
     <node name="/Media_Player">
     <interface name="org.mpris.MediaPlayer2">
@@ -173,27 +248,11 @@ class MediaPlayer2:
     </node>
     """
 
-    def __init__(self, tabid):
+    def __init__(self, tabid, name, objpath):
         self._tabid = tabid
-
-        self.Identity = "youtube"
-        self.HasTrackList = False
 
         self.CanRaise = False
         self.CanQuit = False
-        self._Fullscreen = False
-        self.CanSetFullscreen = False
-
-        self.CanControl = True
-        self.CanGoNext = False
-        self.CanGoPrevious = False
-        self.CanPlay = True
-        self.CanPause = True
-        self.CanSeek = True
-
-        self.MinimumRate = 1
-        self.MaximumRate = 1
-        self._Rate = 1
 
         self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
         self.SupportedMimeTypes = [
@@ -201,6 +260,180 @@ class MediaPlayer2:
             "audio/x-flac",
             # TODO: add more
         ]
+
+        self._Fullscreen = False
+        self.Metadata = {}
+        self.PlaybackStatus = "stopped"
+        self._Rate = 1
+        self._Volume = 1
+        self._Position = 0
+        self._Shuffle = False
+        self._LoopStatus = "None"
+
+        self.__bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        # FIXME: find some other way to share the unowing id
+        self._own_id = Gio.bus_own_name_on_connection(self.__bus, name,
+                                                      Gio.BusNameOwnerFlags.NONE)
+        super().__init__(self.__bus, objpath)
+
+    Fullscreen = MirroredProperty("Fullscreen")
+    Volume = MirroredProperty("Volume")
+    LoopStatus = MirroredProperty("LoopStatus")
+    Shuffle = MirroredProperty("Shuffle")
+    Rate = MirroredProperty("Rate")
+
+    @property
+    def Position(self):
+        # FIXME: major hack
+        self._send_message("query", "position")
+        reply = decode_msg()
+        if reply["type"] == "update" and "position" in reply["data"]:
+            self._Position = reply["data"]["position"]
+        return self._Position
+
+    # PropertiesChanged = pydbus.generic.signal()
+    # Seeked = pydbus.generic.signal()
+
+    # SIGNALS
+    def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
+
+        typed_changed_props = {}
+        for p, value in changed_props.items():
+            # FIXME: assume that it's at least readable
+            typ = self._readable_props[p]
+            typed_changed_props[p] = GLib.Variant(typ, value)
+
+        self.__bus.emit_signal(
+            None,
+            "/org/mpris/MediaPlayer2",
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            GLib.Variant.new_tuple(
+                GLib.Variant("s", iface_name),
+                GLib.Variant("a{sv}", typed_changed_props),
+                GLib.Variant("as", invalidated_props)))
+
+    def Seeked(self, position):
+        self.__bus.emit_signal(
+            None,
+            # FIXME: don't hardcode these
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2.Player",
+            "Seeked",
+            GLib.Variant.new_tuple(GLib.Variant("x", position)))
+
+    # METHODS
+    def Raise(self):
+        pass
+
+    def Quit(self):
+        pass
+
+    def OpenUri(self, url):
+        pass
+
+    def Play(self):
+        self._send_message("Play")
+
+    def Pause(self):
+        self._send_message("Pause")
+
+    def PlayPause(self):
+        self._send_message("PlayPause")
+
+    def Stop(self):
+        self._send_message("Stop")
+
+    def Seek(self, offset):
+        self._send_message("Seek", offset)
+
+    def SetPosition(self, trackid, position):
+        if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
+            self._send_message("SetPosition",
+                               {"id": trackid, "position": position})
+
+    def Next(self):
+        self._send_message("Next")
+
+    def Previous(self):
+        self._send_message("Prev")
+
+    def _send_message(self, cmd, data=None):
+        msg = {
+            "tabId": self._tabid,
+            "cmd": cmd,
+        }
+        if data is not None:
+            msg["data"] = data
+        encode_msg(msg)
+
+    def _emit_changed(self, changes):
+        for c in changes:
+            if c == "Fullscreen":
+                self.PropertiesChanged("org.mpris.MediaPlayer2",
+                                       {c: getattr(self, c)}, [])
+            else:
+                self.PropertiesChanged("org.mpris.MediaPlayer2.Player",
+                                       {c: getattr(self, c)}, [])
+
+    def _handle_msg(self, msg):
+        changes = []
+
+        for key, val in msg["data"].items():
+            if key == "id":
+                self.Metadata["mpris:trackid"] = GLib.Variant("o", "/ID/" + val)
+                changes.append("Metadata")
+            elif key == "url":
+                self.Metadata["xesam:url"] = GLib.Variant("s", val)
+                changes.append("Metadata")
+            elif key == "thumb":
+                self.Metadata["mpris:artUrl"] = GLib.Variant("s", val)
+                changes.append("Metadata")
+            elif key == "title":
+                self.Metadata["xesam:title"] = GLib.Variant("s", val)
+                changes.append("Metadata")
+            elif key == "duration":
+                self.Metadata["mpris:length"] = GLib.Variant("x", val)
+                changes.append("Metadata")
+
+            elif key == "position":
+                self._Position = val
+                # Position should *not* emit a Changed signal
+
+            elif key == "seekedTo":
+                self.Seeked(val)
+
+            elif key in ("Fullscreen", "Volume", "LoopStatus", "Shuffle", "Rate"):
+                setattr(self, "_" + key, val)
+                changes.append(key)
+            else:
+                setattr(self, key, val)
+                changes.append(key)
+
+        if changes:
+            self._emit_changed(changes)
+
+
+class Youtube(MediaPlayer2):
+    # FIXME:
+    __doc__ = MediaPlayer2.__doc__
+
+    def __init__(self, tabid, name, objpath):
+        self.Identity = "youtube"
+        self.HasTrackList = False
+
+        self.CanControl = True
+        self.CanPlay = True
+        self.CanPause = True
+        self.CanSeek = True
+        self.CanSetFullscreen = False
+
+        self.MinimumRate = 0.25
+        self.MaximumRate = 2
+
+        # these are set correctly on song change
+        self.CanGoNext = False
+        self.CanGoPrevious = False
 
         self.PlaybackStatus = "stopped"
         self.Metadata = {}
@@ -210,239 +443,57 @@ class MediaPlayer2:
         self._Shuffle = False
         self._LoopStatus = "None"
 
-    @property
-    def Fullscreen(self):
-        return self._Fullscreen
-
-    @Fullscreen.setter
-    def Fullscreen(self, value):
-        self._send_message({ "cmd": "fullscreen", "data": value })
-
-    @property
-    def Volume(self):
-        return self._Volume
-
-    @Volume.setter
-    def Volume(self, value):
-        self._send_message({ "cmd": "volume", "data": value })
-
-    @property
-    def Position(self):
-        # FIXME: major hack
-        self._send_message({ "cmd": "query", "data": "position" })
-        reply = parse_message()
-        if reply["type"] == "update" and "position" in reply["data"]:
-            self._Position = reply["data"]["position"]
-        return self._Position
-
-    @property
-    def LoopStatus(self):
-        return self._LoopStatus
-
-    @LoopStatus.setter
-    def LoopStatus(self, value):
-        self._send_message({ "cmd": "loop", "data": value })
-
-    @property
-    def Shuffle(self):
-        return self._Shuffle
-
-    @Shuffle.setter
-    def Shuffle(self, value):
-        self._send_message({ "cmd": "shuffle", "data": value })
-
-    @property
-    def Rate(self):
-        return self._Rate
-
-    @Rate.setter
-    def Rate(self, value):
-        self._send_message({ "cmd": "rate", "data": value })
-
-    PropertiesChanged = pydbus.generic.signal()
-    Seeked = pydbus.generic.signal()
-
-    def Raise(self):
-        pass
-
-    def Quit(self):
-        pass
-
-    def Play(self):
-        self._send_message({ "cmd": "play" })
-
-    def Pause(self):
-        self._send_message({ "cmd": "pause" })
-
-    def PlayPause(self):
-        self._send_message({ "cmd": "playpause" })
-
-    def Stop(self):
-        self._send_message({ "cmd": "stop" })
-
-    def Seek(self, offset):
-        self._send_message({ "cmd": "seekBy", "data": offset })
-
-    def SetPosition(self, trackid, position):
-        if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
-            self._send_message({"cmd": "setPosition",
-                                "data": {"id": trackid[4:],
-                                         "position": position
-                                         }
-                                })
-
-    def Next(self):
-        self._send_message({ "cmd": "next" })
-
-    def Previous(self):
-        self._send_message({ "cmd": "prev" })
-
-    def _send_message(self, msg):
-        msg["tabId"] = self._tabid
-        send_message(msg)
-
-    def _emit_changed(self, changed):
-        self.PropertiesChanged("org.mpris.MediaPlayer2.Player", changed, [])
+        super().__init__(tabid, name, objpath)
 
 
 def main():
-    make_streams_binary()
-
-    playing = {}
-    for msg in iter_messages():
-        video = msg['video']
-        playing[video['id']] = video
-        if video['state'] == 'destroyed':
-            del playing[video['id']]
-
-        print(str(video), file=sys.stderr, flush=True)
-        with open('/tmp/musicd-chrome', 'w') as fp:
-            title = video['title'] if 'title' in video else ''
-            fp.write(video['state'] + ' ' + title)
-        with open('/tmp/musicd-chrome.json', 'w') as fp:
-            info = list(playing.values())
-            json.dump(info, fp, indent=4)
-
-
-if __name__ == '__main__':
     mainloop = GLib.MainLoop()
+
+    # FIXME: Called twice because stdin and stdout are TextIOReader and
+    # Writter; the first .detach() call makes them BufferedReader and Writter
+    # and the second raw FileIO, which stdout needs to be for encode_msg.
+    # Alternatively, they could remain Buffered and encode_msg could instead
+    # flush; this is propably the better sollution.
     make_streams_binary()
-
-    with open("/tmp/musicd-chrome.exc", "a") as f:
-        f.write("Starting\n")
-
-    bus = pydbus.SessionBus()
-    # bus.publish("org.mpris.MediaPlayer2.chrome",
-    #             ("/org/mpris/MediaPlayer2", player))
+    make_streams_binary()
 
     players = {}
 
-    def apply_message(player, msg):
-        changes = []
-
-        for key, val in msg["data"].items():
-            if key == "id":
-                player.Metadata["mpris:trackid"] = pydbus.Variant("o", "/ID/" + val)
-                changes.append("Metadata")
-            elif key == "url":
-                player.Metadata["xesam:url"] = pydbus.Variant("s", val)
-                changes.append("Metadata")
-            elif key == "thumb":
-                player.Metadata["mpris:artUrl"] = pydbus.Variant("s", val)
-                changes.append("Metadata")
-            elif key == "title":
-                player.Metadata["xesam:title"] = pydbus.Variant("s", val)
-                changes.append("Metadata")
-            elif key == "duration":
-                player.Metadata["mpris:length"] = pydbus.Variant("x", val)
-                changes.append("Metadata")
-
-            elif key == "hasNext":
-                player.CanGoNext = val
-                changes.append("CanGoNext")
-            elif key == "hasPrev":
-                player.CanGoPrevious = val
-                changes.append("CanGoPrevious")
-
-            # TODO: these may need to go elsewhere
-            elif key == "maxRate":
-                player.MaximumRate = val
-                changes.append("MaximumRate")
-            elif key == "minRate":
-                player.MinimumRate = val
-                changes.append("MinimumRate")
-
-            elif key == "rate":
-                player._Rate = val
-                changes.append("Rate")
-            elif key == "state":
-                player.PlaybackStatus = val
-                changes.append("PlaybackStatus")
-            elif key == "volume":
-                player._Volume = val
-                changes.append("Volume")
-            elif key == "shuffle":
-                player._Shuffle = val
-                changes.append("Shuffle")
-            elif key == "loop":
-                player._LoopStatus = val
-                changes.append("LoopStatus")
-            elif key == "fullscreen":
-                player._Fullscreen = val
-                # Fullscreen is an org.mpris.MediaPlayer2 property
-                player.PropertiesChanged("org.mpris.MediaPlayer2",
-                                         {"Fullscreen": player.Fullscreen},
-                                         [])
-            elif key == "seekedTo":
-                player.Seeked(val)
-
-            elif key == "position":
-                player._Position = val
-                # Position should *not* emit a Changed signal
-
-        if changes:
-            player._emit_changed({n: getattr(player, n) for n in changes})
-
-
-    def watchfunc(chan, condition):
-        msg = parse_message()
+    def message_handler(chan, condition):
+        msg = decode_msg()
         print(msg, file=sys.stderr, flush=True)
 
         if msg["type"] not in ("change", "update", "quit"):
             return True
 
-        if msg["tabId"] not in players:
-            player = MediaPlayer2(msg["tabId"])
-            players[msg["tabId"]] = (
-                player,
-                bus.publish("org.mpris.MediaPlayer2.chrome",
-                            ("/org/mpris/MediaPlayer2", player)),
-            )
+        tabid = msg["tabId"]
 
-        player = players[msg["tabId"]][0]
+        try:
+            player = players[tabid]
+        except KeyError:
+            player = Youtube(tabid,
+                             "org.mpris.MediaPlayer2.chrome",
+                             "/org/mpris/MediaPlayer2")
+            players[tabid] = player
 
         if msg["type"] == "change":
-            apply_message(player, msg)
+            player._handle_msg(msg)
 
         if msg["type"] == "update":
-            apply_message(player, msg)
+            player._handle_msg(msg)
 
         if msg["type"] == "quit":
-            players[msg["tabId"]][1].unpublish()
-            del players[msg["tabId"]]
+            players[tabid].unpublish()
+            del players[tabid]
 
-        with open("/tmp/musicd-chrome", "w") as f:
-            json.dump(msg, f)
-
+        # otherwise GLib will remove our watch
         return True
 
-    make_streams_binary()
     chan = GLib.IOChannel.unix_new(sys.stdin.fileno())
-    chan.add_watch(GLib.IOCondition.IN, watchfunc)
-    # MainLoop.quit doesn't like being given extra arguments
+    chan.add_watch(GLib.IOCondition.IN, message_handler)
     chan.add_watch(GLib.IOCondition.HUP, lambda *_: mainloop.quit())
 
     mainloop.run()
 
-    with open("/tmp/musicd-chrome.exc", "a") as f:
-        f.write("Killing\n")
+if __name__ == '__main__':
+    main()
