@@ -11,7 +11,7 @@
   },
   "content_scripts": [{
     "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
-    "js": ["providers/youtube.js"],
+    "js": ["jquery.min.js", "providers/youtube-2017.js"],
     "run_at": "document_start"
   }],
 

@@ -16,6 +16,7 @@ chrome.runtime.onConnect.addListener(function(port) {
         programPort.postMessage(msg);
     });
     port.onDisconnect.addListener(function() {
+        programPort.postMessage({type: "quit", tabId: port.sender.tab.id});
         programPort.onMessage.removeListener(passMessage);
         if (!--connections)
             programPort.disconnect();

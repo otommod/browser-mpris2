@@ -319,7 +319,7 @@ document.addEventListener("spfdone", e => {
     if (isVideo()) enterVideo();
 });
 
-window.addEventListener("unload", function() {
-    if (isVideo())
-        quit();
-});
+// window.addEventListener("unload", function() {
+//     if (isVideo())
+//         quit();
+// });

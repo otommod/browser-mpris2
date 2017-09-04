@@ -299,9 +299,9 @@ window.addEventListener("DOMContentLoaded", e => {
 });
 
 // When navigating between YouTube pages of different types.
-window.addEventListener("yt-page-type-changed", e => {
-    console.log({source: "youtube", type: e.type, url: location.href});
-});
+// window.addEventListener("yt-page-type-changed", e => {
+//     console.log({source: "youtube", type: e.type, url: location.href});
+// });
 
 // When a YouTube page finished loading.
 // There's also "yt-navigate-start" which fires too early or not at all for
@@ -326,11 +326,4 @@ window.addEventListener("yt-page-data-updated", e => {
         enterVideo();
 
     prevUrl = nextUrl;
-});
-
-window.addEventListener("unload", e => {
-    console.log({source: "youtube", type: e.type, url: location.href});
-
-    if (isVideo())
-        quit()
 });

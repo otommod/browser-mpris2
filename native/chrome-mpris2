@@ -3,12 +3,18 @@
 import json
 import struct
 import sys
+from collections import defaultdict
 
 from gi.repository import Gio, GLib
 
 
 def debug(msg):
     print(msg, file=sys.stderr, flush=True)
+
+
+def make_streams_binary():
+    sys.stdin = sys.stdin.detach()
+    sys.stdout = sys.stdout.detach()
 
 
 def escape_object_path(objpath):
@@ -25,9 +31,15 @@ def unescape_object_path(objpath):
     return GLib.uri_unescape_string(objpath.replace("_", "%"))
 
 
-def make_streams_binary():
-    sys.stdin = sys.stdin.detach()
-    sys.stdout = sys.stdout.detach()
+def encode_msg(msg):
+    try:
+        text = json.dumps(msg)
+    except ValueError:
+        return 0
+
+    data = text.encode("utf-8")
+    length_bytes = struct.pack("@i", len(data))
+    return sys.stdout.write(length_bytes) + sys.stdout.write(data)
 
 
 def decode_msg():
@@ -45,19 +57,8 @@ def decode_msg():
     return json.loads(text)
 
 
-def encode_msg(msg):
-    try:
-        text = json.dumps(msg)
-    except ValueError:
-        return 0
-
-    data = text.encode("utf-8")
-    length_bytes = struct.pack("@i", len(data))
-    return sys.stdout.write(length_bytes) + sys.stdout.write(data)
-
-
 class DBusService:
-    def __init__(self, conn, path):
+    def __init__(self, conn, name, path, flags=Gio.BusNameOwnerFlags.NONE):
         self._conn = conn
 
         self.__reg_ids = []
@@ -88,49 +89,47 @@ class DBusService:
                 self._conn.register_object(path, iface, self.on_method_call)
             )
 
-            self._method_inargs["org.freedesktop.DBus.Properties"] = {
-                "Get": "ss",
-                "GetAll": "s",
-                "Set": "ssv",
-            }
-            self._method_outargs["org.freedesktop.DBus.Properties"] = {
-                "Get": "(v)",
-                "GetAll": "(a{sv})",
-                "Set": "()",
-            }
+        self._method_inargs["org.freedesktop.DBus.Properties"] = {
+            "Get": "ss",
+            "GetAll": "s",
+            "Set": "ssv",
+        }
+        self._method_outargs["org.freedesktop.DBus.Properties"] = {
+            "Get": "(v)",
+            "GetAll": "(a{sv})",
+            "Set": "()",
+        }
+
+        self.__own_id = Gio.bus_own_name_on_connection(self._conn, name, flags)
 
     def unpublish(self):
         for i in self.__reg_ids:
             self._conn.unregister_object(i)
+        Gio.bus_unown_name(self.__own_id)
+        self._conn.close_sync()
 
     def on_method_call(self, conn, sender, objpath, iface_name, method_name,
                        params, invocation):
 
-        method_inargs = self._method_inargs[iface_name]
-        method_outargs = self._method_outargs[iface_name]
+        in_args = self._method_inargs[iface_name][method_name]
+        out_args = self._method_outargs[iface_name][method_name]
+
+        debug("for %s.%s out_args: %s" % (iface_name, method_name, out_args))
 
         # FIXME: move somewhere else
-        if (objpath == "/org/mpris/MediaPlayer2"
-                and iface_name == "org.freedesktop.DBus.Properties"
-                and method_name == "Get"
-                and params[0] == "org.mpris.MediaPlayer2.Player"
-                and params[1] == "Position"):
-            self._get_position(invocation)
+        if iface_name == "org.freedesktop.DBus.Properties":
+            if method_name == "Get":
+                self.get_property(conn, sender, objpath, *params, invocation)
+            elif method_name == "GetAll":
+                self.get_all_properties(conn, sender, objpath, *params,
+                                        invocation)
+            elif method_name == "Set":
+                self.set_property(conn, sender, objpath, *params, invocation)
             return
 
-        if (objpath == "/org/mpris/MediaPlayer2"
-                and iface_name == "org.freedesktop.DBus.Properties"
-                and method_name == "GetAll"
-                and params[0] == "org.mpris.MediaPlayer2.Player"):
-            self._get_position_and_all(invocation)
-            return
-
-        args = list(params.unpack())
-        for i, sig in enumerate(method_inargs[method_name]):
-            if sig is "h":
-                msg = invocation.get_message()
-                fd_list = msg.get_unix_fd_list()
-                args[i] = fd_list.get(args[i])
+        fd_list = invocation.get_message().get_unix_fd_list()
+        args = [fd_list.get(a) if sig == "h" else a
+                for a, sig in zip(params.unpack(), in_args)]
 
         try:
             res = getattr(self, method_name)(*args)
@@ -138,9 +137,9 @@ class DBusService:
             # out_args is at least (sig)
             # We therefore always wrap the result as a tuple.
             # Refer to https://bugzilla.gnome.org/show_bug.cgi?id=765603
+            # FIXME: what about multiple returns?
             res = (res,)
 
-            out_args = method_outargs[method_name]
             if out_args != "()":
                 variant = GLib.Variant(out_args, res)
                 invocation.return_value(variant)
@@ -148,12 +147,36 @@ class DBusService:
                 invocation.return_value(None)
 
         except Exception as e:
-            # TODO: Think of a better way to translate Python exception types
-            # to DBus error types.
             e_type = type(e).__name__
             if "." not in e_type:
-                e_type = "unknown." + e_type
+                e_type = "org.python." + e_type
             invocation.return_dbus_error(e_type, str(e))
+
+    def get_property(self, conn, sender, objpath, iface_name, prop_name,
+                     invocation):
+        if prop_name in self.ASYNC_PROPS[iface_name]:
+            self.Get_async(objpath, iface_name, prop_name, invocation)
+        else:
+            prop = getattr(self, prop_name)
+            typ = self._readable_props[iface_name][prop_name]
+            variant = GLib.Variant(typ, prop)
+            invocation.return_value(GLib.Variant("(v)", (variant,)))
+
+    def get_all_properties(self, conn, sender, objpath, iface_name,
+                           invocation):
+
+        if self.ASYNC_PROPS[iface_name]:
+            self.GetAll_async(objpath, iface_name, invocation)
+        else:
+            all_props = {p: GLib.Variant(t, getattr(self, p))
+                         for p, t in self._readable_props[iface_name].items()}
+            invocation.return_value(GLib.Variant("(a{sv})", (all_props,)))
+
+    def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
+                     invocation):
+        self._writable_props[iface_name][prop_name]
+        setattr(self, prop_name, value)
+        invocation.return_value(None)
 
 
 class MirroredProperty:
@@ -293,9 +316,9 @@ class MediaPlayer2(DBusService):
     </node>
     """
 
-    def __init__(self, tabid, name, objpath):
-        self._tabid = tabid
-        self.__callbacks = {}
+    def __init__(self, conn, tabid, name, objpath):
+        self.__tabid = tabid
+        self.__callbacks = defaultdict(list)
 
         self.CanRaise = False
         self.CanQuit = False
@@ -309,17 +332,13 @@ class MediaPlayer2(DBusService):
 
         self._Fullscreen = False
         self.Metadata = {}
-        self.PlaybackStatus = "stopped"
+        self.PlaybackStatus = "Stopped"
         self._Rate = 1
         self._Volume = 1
-        self._Position = 0
         self._Shuffle = False
         self._LoopStatus = "None"
 
-        bus = Gio.bus_get_sync(Gio.BusType.SESSION)
-        self._own_id = Gio.bus_own_name_on_connection(bus, name,
-                                                      Gio.BusNameOwnerFlags.NONE)
-        super().__init__(bus, objpath)
+        super().__init__(conn, name, objpath)
 
     Fullscreen = MirroredProperty("Fullscreen")
     Volume = MirroredProperty("Volume")
@@ -327,26 +346,40 @@ class MediaPlayer2(DBusService):
     Shuffle = MirroredProperty("Shuffle")
     Rate = MirroredProperty("Rate")
 
-    def _get_position(self, invocation):
-        self._send_message("query", "position")
-        self._set_callback_on("position", lambda p:
-                              invocation.return_value(
-                                  GLib.Variant("(v)", (GLib.Variant("x", p),))
-                              ))
-
-    # FIXME:
-    def _get_position_and_all(self, invocation):
-        everything_else = self.GetAll("org.mpris.MediaPlayer2.Player")
-
-        def inject_position(pos):
-            everything_else["Position"] = GLib.Variant("x", pos)
-            invocation.return_value(GLib.Variant("(a{sv})", (everything_else,)))
-
-        self._send_message("query", "position")
-        self._set_callback_on("position", inject_position)
+    ASYNC_PROPS = {
+        "org.mpris.MediaPlayer2": [],
+        "org.mpris.MediaPlayer2.Player": ["Position"],
+    }
 
     def _set_callback_on(self, prop, callback):
-        self.__callbacks.setdefault(prop, []).append(callback)
+        self.__callbacks[prop].append(callback)
+
+    def Get_async(self, objpath, iface_name, prop_name, invocation):
+        assert iface_name == "org.mpris.MediaPlayer2.Player", \
+                "unknown async iface %s" % iface_name
+        assert prop_name == "Position", "unknown async prop %s" % prop_name
+
+        def callback(pos):
+            variant = GLib.Variant("x", pos)
+            invocation.return_value(GLib.Variant("(v)", (variant,)))
+
+        self._set_callback_on("position", callback)
+        self._send_message("query", "position")
+
+    def GetAll_async(self, objpath, iface_name, invocation):
+        assert iface_name == "org.mpris.MediaPlayer2.Player", \
+                "unknown async iface %s" % iface_name
+
+        non_async = {p: GLib.Variant(t, getattr(self, p))
+                     for p, t in self._readable_props[iface_name].items()
+                     if p not in self.ASYNC_PROPS[iface_name]}
+
+        def callback(pos):
+            non_async["Position"] = GLib.Variant("x", pos)
+            invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
+
+        self._set_callback_on("position", callback)
+        self._send_message("query", "position")
 
     # SIGNALS
     def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
@@ -376,20 +409,6 @@ class MediaPlayer2(DBusService):
             GLib.Variant.new_tuple(GLib.Variant("x", position)))
 
     # METHODS
-    def Get(self, iface_name, prop_name):
-        typ = self._readable_props[iface_name][prop_name]
-        prop = getattr(self, prop_name)
-        return GLib.Variant(typ, prop)
-
-    # FIXME:
-    def GetAll(self, iface_name):
-        iface_props = self._readable_props[iface_name]
-        return {p: self.Get(iface_name, p) for p in iface_props if p != "Position"}
-
-    def Set(self, iface_name, prop_name, value):
-        self._writable_properties[iface_name][prop_name]
-        setattr(self.object, prop_name, value)
-
     def Raise(self):
         pass
 
@@ -426,13 +445,9 @@ class MediaPlayer2(DBusService):
     def Previous(self):
         self._send_message("Prev")
 
-    def unpublish(self):
-        super().unpublish()
-        Gio.bus_unown_name(self._own_id)
-
     def _send_message(self, cmd, data=None):
         msg = {
-            "tabId": self._tabid,
+            "tabId": self.__tabid,
             "cmd": cmd,
         }
         if data is not None:
@@ -470,7 +485,7 @@ class MediaPlayer2(DBusService):
                 changes.append("Metadata")
 
             elif key == "position":
-                self._Position = val
+                pass
                 # Position should *not* emit a Changed signal
 
             elif key == "seekedTo":
@@ -496,7 +511,7 @@ class Youtube(MediaPlayer2):
     # FIXME:
     __doc__ = MediaPlayer2.__doc__
 
-    def __init__(self, tabid, name, objpath):
+    def __init__(self, conn, tabid, name, objpath):
         self.Identity = "youtube"
         self.HasTrackList = False
 
@@ -513,15 +528,14 @@ class Youtube(MediaPlayer2):
         self.CanGoNext = False
         self.CanGoPrevious = False
 
-        self.PlaybackStatus = "stopped"
+        self.PlaybackStatus = "Stopped"
         self.Metadata = {}
-        self._Position = 0
         self._Volume = 1
 
         self._Shuffle = False
         self._LoopStatus = "None"
 
-        super().__init__(tabid, name, objpath)
+        super().__init__(conn, tabid, name, objpath)
 
 
 def main():
@@ -549,9 +563,28 @@ def main():
         try:
             player = players[tabid]
         except KeyError:
-            player = Youtube(tabid,
-                             "org.mpris.MediaPlayer2.chrome",
-                             "/org/mpris/MediaPlayer2")
+            # Many terrible things can happen to tabs; they can crash or be
+            # discarded.  For these cases out background.js should still inform
+            # us.  However it may be that that tab has already quit e.g. it may
+            # be in YouTube's main page when it crashes.  In these cases we
+            # don't want to create a player just to immediately destroy it.
+            if msg["type"] == "quit":
+                return True
+
+            connflags = (Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT
+                         | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION)
+
+            addr = Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION)
+            conn = Gio.DBusConnection.new_for_address_sync(addr, connflags)
+            conn.set_exit_on_close(True)
+
+            name = "org.mpris.MediaPlayer2.chrome"
+            if players:
+                # if we are exposing more than one player we need to give them
+                # unique names
+                name += ".tab%d" % tabid
+
+            player = Youtube(conn, tabid, name, "/org/mpris/MediaPlayer2")
             players[tabid] = player
 
         if msg["type"] == "change":
