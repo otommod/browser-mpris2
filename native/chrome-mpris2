@@ -39,7 +39,11 @@ def encode_msg(msg):
 
     data = text.encode("utf-8")
     length_bytes = struct.pack("@i", len(data))
-    return sys.stdout.write(length_bytes) + sys.stdout.write(data)
+    written = sys.stdout.write(length_bytes) + sys.stdout.write(data)
+
+    # We flush to make sure that Chrome gets the message *right now*
+    sys.stdout.flush()
+    return written
 
 
 def decode_msg():
@@ -59,6 +63,8 @@ def decode_msg():
 class DBusService:
     def __init__(self, conn, name, path, flags=Gio.BusNameOwnerFlags.NONE):
         self._conn = conn
+        self._name = name
+        self._path = path
 
         self.__reg_ids = []
 
@@ -137,76 +143,66 @@ class DBusService:
 
     def get_property(self, conn, sender, objpath, iface_name, prop_name,
                      invocation):
-        if prop_name in self.ASYNC_PROPS[iface_name]:
-            self.Get_async(objpath, iface_name, prop_name, invocation)
-        else:
-            prop = getattr(self, prop_name)
-            typ = self._properties[iface_name][prop_name]
-            variant = GLib.Variant(typ, prop)
-            invocation.return_value(GLib.Variant("(v)", (variant,)))
+        typ = self._properties[iface_name][prop_name]
+        variant = GLib.Variant(typ, getattr(self, prop_name))
+        invocation.return_value(GLib.Variant("(v)", (variant,)))
 
     def get_all_properties(self, conn, sender, objpath, iface_name,
                            invocation):
-
-        if self.ASYNC_PROPS[iface_name]:
-            self.GetAll_async(objpath, iface_name, invocation)
-        else:
-            all_props = {p: GLib.Variant(t, getattr(self, p))
-                         for p, t in self._properties[iface_name].items()}
-            invocation.return_value(GLib.Variant("(a{sv})", (all_props,)))
+        all_props = {p: GLib.Variant(t, getattr(self, p))
+                     for p, t in self._properties[iface_name].items()}
+        invocation.return_value(GLib.Variant("(a{sv})", (all_props,)))
 
     def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
                      invocation):
         setattr(self, prop_name, value)
         invocation.return_value(None)
 
+    # SIGNALS
+    def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
+        # we assume readable properties
+        typed_changed_props = {
+            p: GLib.Variant(self._properties[iface_name][p], v)
+            for p, v in changed_props.items()
+        }
 
-class MirroredProperty:
-    def __init__(self, attrname):
-        self.attrname = attrname
-
-    def __get__(self, obj, objtype=None):
-        return getattr(obj, "_" + self.attrname)
-
-    def __set__(self, obj, value):
-        obj._send_message(self.attrname, value)
+        self._conn.emit_signal(
+            None,
+            self._path,
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            GLib.Variant.new_tuple(
+                GLib.Variant("s", iface_name),
+                GLib.Variant("a{sv}", typed_changed_props),
+                GLib.Variant("as", invalidated_props)))
 
 
 class MediaPlayer2(DBusService):
     """
-    <node name="/Media_Player">
+    <node>
     <interface name="org.mpris.MediaPlayer2">
         <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
 
         <method name="Raise"/>
         <method name="Quit"/>
 
-        <property name="CanRaise" type="b" access="read"/>
-        <property name="CanQuit" type="b" access="read"/>
-
-        <property name="CanSetFullscreen" type="b" access="read">
-            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
-        </property>
-
-        <property name="Fullscreen" type="b" access="readwrite">
-            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
-        </property>
-
-        <property name="HasTrackList" type="b" access="read"/>
-        <property name="Identity" type="s" access="read"/>
-
+        <property name="Identity"            type="s"  access="read"/>
         <!--
-        <property name="DesktopEntry" type="s" access="read">
+        <property name="DesktopEntry"        type="s"  access="read">
             <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
         -->
 
+        <property name="CanRaise"            type="b"  access="read"/>
+        <property name="CanQuit"             type="b"  access="read"/>
+        <property name="Fullscreen"          type="b"  access="readwrite"/>
+        <property name="CanSetFullscreen"    type="b"  access="read"/>
         <property name="SupportedUriSchemes" type="as" access="read"/>
-        <property name="SupportedMimeTypes" type="as" access="read"/>
+        <property name="SupportedMimeTypes"  type="as" access="read"/>
+        <property name="HasTrackList"        type="b"  access="read"/>
     </interface>
 
     <interface name="org.mpris.MediaPlayer2.Player">
-
         <method name="Play"/>
         <method name="Pause"/>
         <method name="PlayPause"/>
@@ -228,72 +224,36 @@ class MediaPlayer2(DBusService):
             <arg direction="in" type="s" name="Uri"/>
         </method>
 
-        <property name="PlaybackStatus" type="s" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
+        <property name="PlaybackStatus" type="s"     access="read"/>
 
-        <property name="LoopStatus" type="s" access="readwrite">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
-        </property>
-
-        <property name="Rate" type="d" access="readwrite">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="Shuffle" type="b" access="readwrite">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
-        </property>
-
-        <property name="Metadata" type="a{sv}" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="Volume" type="d" access="readwrite">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="Position" type="x" access="read">
+        <property name="Position"       type="x"     access="read">
             <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
         </property>
 
-        <property name="MinimumRate" type="d" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="MaximumRate" type="d" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="CanGoNext" type="b" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="CanGoPrevious" type="b" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="CanPlay" type="b" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="CanPause" type="b" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="CanSeek" type="b" access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-        </property>
-
-        <property name="CanControl" type="b" access="read">
+        <property name="Metadata"       type="a{sv}" access="read"/>
+        <property name="Volume"         type="d"     access="readwrite"/>
+        <property name="Rate"           type="d"     access="readwrite"/>
+        <property name="MinimumRate"    type="d"     access="read"/>
+        <property name="MaximumRate"    type="d"     access="read"/>
+        <property name="CanGoNext"      type="b"     access="read"/>
+        <property name="CanGoPrevious"  type="b"     access="read"/>
+        <property name="CanPlay"        type="b"     access="read"/>
+        <property name="CanPause"       type="b"     access="read"/>
+        <property name="CanSeek"        type="b"     access="read"/>
+        <property name="CanControl"     type="b"     access="read">
             <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+        </property>
+
+        <property name="Shuffle"        type="b"     access="readwrite">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+        <property name="LoopStatus"     type="s"     access="readwrite">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
 
         <signal name="Seeked">
             <arg name="Position" type="x"/>
         </signal>
-
     </interface>
     </node>
     """
@@ -304,83 +264,71 @@ class MediaPlayer2(DBusService):
 
         self.CanRaise = False
         self.CanQuit = False
-
         self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
         self.SupportedMimeTypes = [
             "audio/mpeg",
             "audio/x-flac",
             # TODO: add more
         ]
+        self.HasTrackList = False
 
-        self._Fullscreen = False
+        self.Fullscreen = False
         self.Metadata = {}
         self.PlaybackStatus = "Stopped"
-        self._Rate = 1
-        self._Volume = 1
-        self._Shuffle = False
-        self._LoopStatus = "None"
+        self.Rate = 1
+        self.Volume = 1
+        self.Shuffle = False
+        self.LoopStatus = "None"
 
         super().__init__(conn, name, objpath)
-
-    Fullscreen = MirroredProperty("Fullscreen")
-    Volume = MirroredProperty("Volume")
-    LoopStatus = MirroredProperty("LoopStatus")
-    Shuffle = MirroredProperty("Shuffle")
-    Rate = MirroredProperty("Rate")
-
-    ASYNC_PROPS = {
-        "org.mpris.MediaPlayer2": [],
-        "org.mpris.MediaPlayer2.Player": ["Position"],
-    }
 
     def _set_callback_on(self, prop, callback):
         self.__callbacks[prop].append(callback)
 
-    def Get_async(self, objpath, iface_name, prop_name, invocation):
-        assert iface_name == "org.mpris.MediaPlayer2.Player", \
-                "unknown async iface %s" % iface_name
-        assert prop_name == "Position", "unknown async prop %s" % prop_name
+    # PROPERTIES
+    def get_property(self, conn, sender, objpath, iface_name, prop_name,
+                     invocation):
+        if (iface_name == "org.mpris.MediaPlayer2.Player"
+                and prop_name == "Position"):
 
-        def callback(pos):
-            variant = GLib.Variant("x", pos)
-            invocation.return_value(GLib.Variant("(v)", (variant,)))
+            def callback(pos):
+                variant = GLib.Variant("x", pos)
+                invocation.return_value(GLib.Variant("(v)", (variant,)))
 
-        self._set_callback_on("position", callback)
-        self._send_message("query", "position")
+            self._set_callback_on("position", callback)
+            self._send_message("query", "position")
 
-    def GetAll_async(self, objpath, iface_name, invocation):
-        assert iface_name == "org.mpris.MediaPlayer2.Player", \
-                "unknown async iface %s" % iface_name
+        else:
+            super().get_property(conn, sender, objpath, iface_name, prop_name,
+                                 invocation)
 
-        non_async = {p: GLib.Variant(t, getattr(self, p))
-                     for p, t in self._properties[iface_name].items()
-                     if p not in self.ASYNC_PROPS[iface_name]}
+    def get_all_properties(self, conn, sender, objpath, iface_name,
+                           invocation):
+        if iface_name == "org.mpris.MediaPlayer2.Player":
+            non_async = {p: GLib.Variant(t, getattr(self, p))
+                         for p, t in self._properties[iface_name].items()
+                         if p != "Position"}
 
-        def callback(pos):
-            non_async["Position"] = GLib.Variant("x", pos)
-            invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
+            def callback(pos):
+                non_async["Position"] = GLib.Variant("x", pos)
+                invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
 
-        self._set_callback_on("position", callback)
-        self._send_message("query", "position")
+            self._set_callback_on("position", callback)
+            self._send_message("query", "position")
+
+        else:
+            super().get_all_properties(conn, sender, objpath, iface_name,
+                                       invocation)
+
+    def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
+                     invocation):
+        if prop_name in ("Fullscreen", "Volume", "LoopStatus", "Shuffle", "Rate"):
+            self._send_message(prop_name, value)
+        else:
+            setattr(self, prop_name, value)
+        invocation.return_value(None)
 
     # SIGNALS
-    def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
-        typed_changed_props = {}
-        for p, value in changed_props.items():
-            # FIXME: we assume readable properties
-            typ = self._properties[iface_name][p]
-            typed_changed_props[p] = GLib.Variant(typ, value)
-
-        self._conn.emit_signal(
-            None,
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties",
-            "PropertiesChanged",
-            GLib.Variant.new_tuple(
-                GLib.Variant("s", iface_name),
-                GLib.Variant("a{sv}", typed_changed_props),
-                GLib.Variant("as", invalidated_props)))
-
     def Seeked(self, position):
         self._conn.emit_signal(
             None,
@@ -436,15 +384,6 @@ class MediaPlayer2(DBusService):
             msg["data"] = data
         encode_msg(msg)
 
-    def _emit_changed(self, changes):
-        for c in changes:
-            if c == "Fullscreen":
-                self.PropertiesChanged("org.mpris.MediaPlayer2",
-                                       {c: getattr(self, c)}, [])
-            else:
-                self.PropertiesChanged("org.mpris.MediaPlayer2.Player",
-                                       {c: getattr(self, c)}, [])
-
     def _handle_msg(self, msg):
         changes = []
 
@@ -469,13 +408,9 @@ class MediaPlayer2(DBusService):
             elif key == "position":
                 pass
                 # Position should *not* emit a Changed signal
-
             elif key == "seekedTo":
                 self.Seeked(val)
 
-            elif key in ("Fullscreen", "Volume", "LoopStatus", "Shuffle", "Rate"):
-                setattr(self, "_" + key, val)
-                changes.append(key)
             else:
                 setattr(self, key, val)
                 changes.append(key)
@@ -485,8 +420,14 @@ class MediaPlayer2(DBusService):
                     cb(val)
                 del self.__callbacks[key]
 
+        if "Fullscreen" in changes:
+            changes.remove("Fullscreen")
+            self.PropertiesChanged("org.mpris.MediaPlayer2",
+                                   {"Fullscreen": self.Fullscreen}, [])
+
         if changes:
-            self._emit_changed(changes)
+            self.PropertiesChanged("org.mpris.MediaPlayer2.Player",
+                                   {c: getattr(self, c) for c in changes}, [])
 
 
 class Youtube(MediaPlayer2):
@@ -494,8 +435,9 @@ class Youtube(MediaPlayer2):
     __doc__ = MediaPlayer2.__doc__
 
     def __init__(self, conn, tabid, name, objpath):
+        super().__init__(conn, tabid, name, objpath)
+
         self.Identity = "youtube"
-        self.HasTrackList = False
 
         self.CanControl = True
         self.CanPlay = True
@@ -510,25 +452,13 @@ class Youtube(MediaPlayer2):
         self.CanGoNext = False
         self.CanGoPrevious = False
 
-        self.PlaybackStatus = "Stopped"
-        self.Metadata = {}
-        self._Volume = 1
-
-        self._Shuffle = False
-        self._LoopStatus = "None"
-
-        super().__init__(conn, tabid, name, objpath)
+        self.Shuffle = False
+        self.LoopStatus = "None"
 
 
 def main():
     mainloop = GLib.MainLoop()
 
-    # FIXME: Called twice because stdin and stdout are TextIOReader and
-    # Writter; the first .detach() call makes them BufferedReader and Writter
-    # and the second raw FileIO, which stdout needs to be for encode_msg.
-    # Alternatively, they could remain Buffered and encode_msg could instead
-    # flush; this is propably the better sollution.
-    make_streams_binary()
     make_streams_binary()
 
     players = {}
