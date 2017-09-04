@@ -45,9 +45,8 @@ def encode_msg(msg):
 def decode_msg():
     # Read the message length (first 4 bytes).
     length_bytes = sys.stdin.read(4)
-    if not len(length_bytes):
-        # FIXME:
-        sys.exit(0)
+    if len(length_bytes) < 4:
+        raise ValueError("unexpected end of input")
 
     # Unpack message length as 4 byte integer.
     length = struct.unpack('@i', length_bytes)[0]
@@ -62,43 +61,33 @@ class DBusService:
         self._conn = conn
 
         self.__reg_ids = []
-        self._method_outargs = {}
-        self._method_inargs = {}
-        self._readable_props = {}
-        self._writable_props = {}
+
+        self._properties = {}
+        self._methods = {
+            # "org.freedesktop.DBus.Properties": {
+            #     "Get": ("ss", ("v",)),
+            #     "GetAll": ("s", ("a{sv}",)),
+            #     "Set": ("ssv", ()),
+            # }
+        }
 
         node_info = Gio.DBusNodeInfo.new_for_xml(self.__doc__)
         for iface in node_info.interfaces:
-            method_inargs = self._method_inargs.setdefault(iface.name, {})
-            method_outargs = self._method_outargs.setdefault(iface.name, {})
-            for method in iface.methods:
-                method_outargs[method.name] = "(%s)" % "".join(
-                    arg.signature for arg in method.out_args)
-                method_inargs[method.name] = tuple(
-                    arg.signature for arg in method.in_args)
+            self._methods[iface.name] = {
+                meth.name: (tuple(a.signature for a in meth.out_args),
+                            tuple(a.signature for a in meth.in_args))
+                for meth in iface.methods
+            }
 
-            readable_props = self._readable_props.setdefault(iface.name, {})
-            writable_props = self._writable_props.setdefault(iface.name, {})
-            for prop in iface.properties:
-                if prop.flags & Gio.DBusPropertyInfoFlags.READABLE:
-                    readable_props[prop.name] = prop.signature
-                if prop.flags & Gio.DBusPropertyInfoFlags.WRITABLE:
-                    writable_props[prop.name] = prop.signature
+            self._properties[iface.name] = {
+                prop.name: prop.signature
+                for prop in iface.properties
+                if prop.flags & Gio.DBusPropertyInfoFlags.READABLE
+            }
 
             self.__reg_ids.append(
                 self._conn.register_object(path, iface, self.on_method_call)
             )
-
-        self._method_inargs["org.freedesktop.DBus.Properties"] = {
-            "Get": "ss",
-            "GetAll": "s",
-            "Set": "ssv",
-        }
-        self._method_outargs["org.freedesktop.DBus.Properties"] = {
-            "Get": "(v)",
-            "GetAll": "(a{sv})",
-            "Set": "()",
-        }
 
         self.__own_id = Gio.bus_own_name_on_connection(self._conn, name, flags)
 
@@ -111,11 +100,6 @@ class DBusService:
     def on_method_call(self, conn, sender, objpath, iface_name, method_name,
                        params, invocation):
 
-        in_args = self._method_inargs[iface_name][method_name]
-        out_args = self._method_outargs[iface_name][method_name]
-
-        debug("for %s.%s out_args: %s" % (iface_name, method_name, out_args))
-
         # FIXME: move somewhere else
         if iface_name == "org.freedesktop.DBus.Properties":
             if method_name == "Get":
@@ -127,6 +111,8 @@ class DBusService:
                 self.set_property(conn, sender, objpath, *params, invocation)
             return
 
+        in_args, out_args = self._methods[iface_name][method_name]
+
         fd_list = invocation.get_message().get_unix_fd_list()
         args = [fd_list.get(a) if sig == "h" else a
                 for a, sig in zip(params.unpack(), in_args)]
@@ -134,17 +120,14 @@ class DBusService:
         try:
             res = getattr(self, method_name)(*args)
 
-            # out_args is at least (sig)
-            # We therefore always wrap the result as a tuple.
-            # Refer to https://bugzilla.gnome.org/show_bug.cgi?id=765603
-            # FIXME: what about multiple returns?
-            res = (res,)
-
-            if out_args != "()":
-                variant = GLib.Variant(out_args, res)
-                invocation.return_value(variant)
+            if not out_args:
+                res = None
+            elif len(out_args) == 1:
+                res = GLib.Variant("(%s)" % "".join(out_args), (res,))
             else:
-                invocation.return_value(None)
+                res = GLib.Variant("(%s)" % "".join(out_args), res)
+
+            invocation.return_value(res)
 
         except Exception as e:
             e_type = type(e).__name__
@@ -158,7 +141,7 @@ class DBusService:
             self.Get_async(objpath, iface_name, prop_name, invocation)
         else:
             prop = getattr(self, prop_name)
-            typ = self._readable_props[iface_name][prop_name]
+            typ = self._properties[iface_name][prop_name]
             variant = GLib.Variant(typ, prop)
             invocation.return_value(GLib.Variant("(v)", (variant,)))
 
@@ -169,12 +152,11 @@ class DBusService:
             self.GetAll_async(objpath, iface_name, invocation)
         else:
             all_props = {p: GLib.Variant(t, getattr(self, p))
-                         for p, t in self._readable_props[iface_name].items()}
+                         for p, t in self._properties[iface_name].items()}
             invocation.return_value(GLib.Variant("(a{sv})", (all_props,)))
 
     def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
                      invocation):
-        self._writable_props[iface_name][prop_name]
         setattr(self, prop_name, value)
         invocation.return_value(None)
 
@@ -371,7 +353,7 @@ class MediaPlayer2(DBusService):
                 "unknown async iface %s" % iface_name
 
         non_async = {p: GLib.Variant(t, getattr(self, p))
-                     for p, t in self._readable_props[iface_name].items()
+                     for p, t in self._properties[iface_name].items()
                      if p not in self.ASYNC_PROPS[iface_name]}
 
         def callback(pos):
@@ -385,8 +367,8 @@ class MediaPlayer2(DBusService):
     def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
         typed_changed_props = {}
         for p, value in changed_props.items():
-            # FIXME: we assume that it's at least readable, will it always be?
-            typ = self._readable_props[iface_name][p]
+            # FIXME: we assume readable properties
+            typ = self._properties[iface_name][p]
             typed_changed_props[p] = GLib.Variant(typ, value)
 
         self._conn.emit_signal(
