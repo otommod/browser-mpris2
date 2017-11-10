@@ -1,9 +1,0 @@
-{
-  "name": "org.mpris.chrome_host",
-  "description": "A DBus service",
-  "path": "%PATH%",
-  "type": "stdio",
-  "allowed_origins": [
-    "chrome-extension://eieekfoimmohphnkmmkdiloifpmknfkh/"
-  ]
-}
