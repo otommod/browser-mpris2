@@ -16,3 +16,5 @@ If on GNOME or similar you should be able to take advantage of your new powers i
 ## Similar Projects
 * [plasma-browser-integration](https://github.com/KDE/plasma-browser-integration)
   KDE only.  It's more general as it works on `<audio>` and `<video>` elements, though it misses out on some of the more "advanced" capabilities, such as cover art support.
+* [shwsh/web-mpris2](https://github.com/shwsh/web-mpris2)
+  A port of this extension to Tampermonkey/Greasemonkey (and WebSockets).
