@@ -3,7 +3,7 @@ var programPort = null;
 
 chrome.runtime.onConnect.addListener(function(port) {
     if (!connections++)
-        programPort = chrome.runtime.connectNative("org.mpris.chrome_host");
+        programPort = chrome.runtime.connectNative("org.mpris.browser_host");
 
     function passMessage(msg) {
         if (msg.tabId == port.sender.tab.id || msg.tabId < 0)

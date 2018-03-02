@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
 
-  "name": "chrome-mpris2",
-  "description": "Implements the MPRIS2 interface for Chrome.",
+  "name": "browser-mpris2",
+  "description": "Implements the MPRIS2 interface for Chrome and Firefox",
   "version": "0.1",
 
   "background": {
