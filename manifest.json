@@ -9,11 +9,18 @@
     "scripts": ["background.js"],
     "persistent": false
   },
-  "content_scripts": [{
-    "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
-    "js": ["jquery.min.js", "providers/youtube-2017.js"],
-    "run_at": "document_start"
-  }],
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
+      "js": ["jquery.min.js", "providers/youtube-2017.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.hooktube.com/*", "*://hooktube.com/*"],
+      "js": ["providers/hooktube.js"],
+      "run_at": "document_start"
+    }
+  ],
 
   "permissions": [
     "nativeMessaging"
