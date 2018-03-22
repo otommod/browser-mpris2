@@ -1,115 +1,14 @@
 "use strict";
 
 let videoElement = null;
-let observers = [];
 
-class EventObserver {
-    constructor(element, event, handler) {
-        this.element = element;
-        this.event = event;
-        this.handler = handler
-
-        element.addEventListener(event, this.handler);
-    }
-
-    disconnect() {
-        this.element.removeEventListener(this.event, this.handler);
-    }
-}
 
 function isVideo(url=location) {
     return url.pathname.startsWith("/watch");
 }
 
-const COMMANDS = {
-    query(attr) {
-        switch (attr) {
-        case "position":
-            update({ position: Math.trunc(videoElement.currentTime *1e6) });
-            break;
-        }
-    },
-
-    Play() {
-        videoElement.play();
-    },
-    Pause() {
-        videoElement.pause();
-    },
-    PlayPause() {
-        if (videoElement.paused || videoElement.ended) {
-            videoElement.play();
-        } else {
-            videoElement.pause();
-        }
-    },
-    Stop() {
-        videoElement.currentTime = videoElement.duration;
-    },
-
-    Next() {
-    },
-    Prev() {
-    },
-
-    Seek(offset) {
-        videoElement.currentTime += offset / 1e6;
-        if (videoElement.currentTime >= videoElement.duration)
-            this.Next();
-    },
-    SetPosition({ id, position }) {
-        // TODO: perhaps store the ID somewhere?
-        if (id === (new URL(location)).searchParams.get("v"))
-            videoElement.currentTime = position / 1e6;
-    },
-
-    Rate(what) {
-        if (what > 0)
-            videoElement.playbackRate = what;
-    },
-
-    Volume(notMute) {
-        videoElement.muted = !notMute;
-    },
-    Fullscreen() {
-        if(document.fullscreenElement) {
-            document.exitFullscreen(); 
-        } else {
-            videoElement.requestFullScreen();
-        }
-    },
-
-    Shuffle(yes) {
-    },
-    LoopStatus(how) {
-    }
-};
-
-function update(change) {
-    port.postMessage({
-        source: "hooktube",
-        type: "update",
-        data: change
-    });
-}
-
-function quit() {
-    port.postMessage({
-        source: "youtube", type: "quit",
-    });
-}
-
-const port = chrome.runtime.connect();
-port.onMessage.addListener(({ cmd, data }) => {
-    console.log("COMMAND", cmd);
-    if (videoElement)
-        COMMANDS[cmd](data);
-});
-
 function loopStatus() {
-    if (videoElement.hasAttribute("loop"))
-        return "Track";
-    return "None";
+    return videoElement.loop ? "Track" : "None";
 }
 
 function enterVideo() {
@@ -142,60 +41,133 @@ function enterVideo() {
     };
 
     for (let [event, handler] of Object.entries(eventHandlers))
-        observers.push(new EventObserver(videoElement, event, handler));
+        videoElement.addEventListener(event, handler);
 
     const loopObserver = new MutationObserver(muts => {
         muts.forEach(m => update({ LoopStatus: loopStatus() }));
+        console.log("looping changed");
     });
     loopObserver.observe(videoElement, {
         attributes: true,
         subtree: false,
         attributeFilter: ["loop"],
     });
-    observers.push(loopObserver);
 
-    observers.push(new EventObserver(document, "webkitfullscreenchange", e => {
+    document.addEventListener("webkitfullscreenchange", e => {
         // We'll assume that it's the video that was made fullscreen.
         update({ Fullscreen: !!document.webkitFullscreenElement });
-    }));
+    });
 
     video.LoopStatus = loopStatus();
     video.Volume = videoElement.volume;
     video.Rate = videoElement.playbackRate;
 
+    update(video);
+}
+
+const COMMANDS = {
+    query(attr) {
+        switch (attr) {
+        case "position":
+            update({ position: Math.trunc(videoElement.currentTime *1e6) });
+            break;
+        }
+    },
+
+    Play() {
+        videoElement.play();
+    },
+    Pause() {
+        videoElement.pause();
+    },
+    PlayPause() {
+        if (videoElement.paused || videoElement.ended) {
+            videoElement.play();
+        } else {
+            videoElement.pause();
+        }
+    },
+    Stop() {
+        videoElement.currentTime = videoElement.duration;
+    },
+
+    Next() { },
+    Prev() { },
+
+    Seek(offset) {
+        videoElement.currentTime += offset / 1e6;
+        if (videoElement.currentTime >= videoElement.duration)
+            this.Next();
+    },
+    SetPosition({ id, position }) {
+        // TODO: perhaps store the ID somewhere?
+        if (id === (new URL(location)).searchParams.get("v"))
+            videoElement.currentTime = position / 1e6;
+    },
+
+    Rate(what) {
+        if (what > 0)
+            videoElement.playbackRate = what;
+    },
+
+    Volume(notMute) {
+        videoElement.muted = !notMute;
+    },
+    Fullscreen() { },
+
+    Shuffle(yes) { },
+    LoopStatus(how) {
+        setLoop(how !== "None");
+    }
+};
+
+function setLoop(yes) {
+    if ((yes && videoElement.loop) || (!yes && !videoElement.loop))
+        return;
+
+    document.getElementById("video-loop").click();
+}
+
+
+const port = chrome.runtime.connect();
+port.onMessage.addListener(({ cmd, data }) => {
+    console.log("COMMAND", cmd);
+    if (videoElement)
+        COMMANDS[cmd](data);
+});
+
+function update(change) {
     port.postMessage({
-        source: "hooktube",
-        type: "change",
-        data: video
+        source: "hooktube", type: "update", data: change,
     });
 }
 
-window.addEventListener("beforeunload", e => {
-    observers.forEach(obs => obs.disconnect());
-    observers = [];
+function quit() {
+    port.postMessage({
+        source: "youtube", type: "quit",
+    });
+}
+
+window.addEventListener("load", () => {
+    const videoSourcElement = document.getElementById("video-source");
+    if (videoSourcElement == null)
+        return;
+
+    const videoObserver = new MutationObserver(muts => {
+        muts.forEach(mut => {
+            for (let node of mut.addedNodes) {
+                if (node.id === "player-obj") {
+                    videoElement = node;
+                    enterVideo();
+                    break;
+                }
+            }
+        });
+    });
+    videoObserver.observe(videoSourcElement, { childList: true });
 });
 
 window.addEventListener("unload", () => {
     if (isVideo())
         quit();
-});
-
-window.addEventListener("load", () => {
-    const mutationObserver = new MutationObserver(muts => {
-        for(let mut of muts) {
-            if(mut.type === "childList") {
-                for(let node of mut.addedNodes) {
-                    if(node.id === "player-obj") {
-                        videoElement = node;
-                        enterVideo();
-                        break;
-                    }
-                }
-            }
-        }
-    });
-    mutationObserver.observe(document.body, {
-        childList: true,
-        subtree: true
-    });
 });
