@@ -45,7 +45,6 @@ function enterVideo() {
 
     const loopObserver = new MutationObserver(muts => {
         muts.forEach(m => update({ LoopStatus: loopStatus() }));
-        console.log("looping changed");
     });
     loopObserver.observe(videoElement, {
         attributes: true,
