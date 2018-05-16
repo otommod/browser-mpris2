@@ -6,7 +6,7 @@ class Playlist {
     constructor({ loop=false, shuffle=false }={}) {
         this.id = "";
         this.index = -1;
-        this.content = [];
+        this.length = 0;
         this.loop = loop;
         this.shuffle = shuffle;
     }
@@ -28,51 +28,58 @@ class EventObserver {
 }
 
 
+let videoElement;
+
+let video;
+let playlist = new Playlist();
+
+let prevUrl;
+let observers = [];
+
 function isVideo(url=location) {
     return url.pathname.startsWith("/watch");
 }
 
 function loopStatus() {
-    if (videoElement.hasAttribute("loop"))
+    if (videoElement.loop)
         return "Track";
-    if (playlist.content.length && playlist.loop)
+    if (playlist.length && playlist.loop)
         return "Playlist";
     return "None";
 }
 
-
 function enterVideo() {
     let video = {
-        id: document.querySelector("[itemprop=videoId]").content,
-        url: document.querySelector("[itemprop=url]").href,
-        title: document.querySelector("[itemprop=name]").content,
-        thumb: document.querySelector("[itemprop=thumbnailUrl]").href,
+        id: (new URL(location)).searchParams.get("v"),
+        url: location.href,
+        title: $("title").text().slice(0, -10),
     };
+    video.thumb = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
 
     const eventHandlers = {
-        play()    { update({PlaybackStatus: "Playing"}); },
-        playing() { update({PlaybackStatus: "Playing"}); },
-        pause() { update({PlaybackStatus: "Paused"}); },
-        ended() { update({PlaybackStatus: "Stopped"}); },
+        play() { update({ PlaybackStatus: "Playing" }); },
+        playing() { update({ PlaybackStatus: "Playing" }); },
+        pause() { update({ PlaybackStatus: "Paused" }); },
+        ended() { update({ PlaybackStatus: "Stopped" }); },
+
+        // when a seek operation completes
+        // FIXME: it seems that YouTube is "sending" too many seeked events
+        // e.g., according to mpris Playing from the beginning after being
+        // Stopped should not be considered a Seek, yet YouTube does send a
+        // seeked event and we propagate that to DBus as well
+        seeked(e) { update({ seekedTo: Math.trunc(e.target.currentTime * 1e6)  }); },
 
         // when the playback speed changes
         ratechange(e) { update({ Rate: e.target.playbackRate }); },
 
-        // when the audio volume changes or is muted
-        volumechange(e) { update({Volume: e.target.muted ? 0.0 : e.target.volume}); },
-
         // a change in the duration of the media
-        durationchange(e) { update({duration: Math.trunc(e.target.duration * 1e6)}); },
+        durationchange(e) { update({ duration: Math.trunc(e.target.duration * 1e6)  }); },
 
-        // when a seek operation completes
-        // TODO: it seems that YouTube is "sending" too many seeked events e.g.,
-        // according to mpris Playing from the beginning after being Stopped should
-        // not be considered a Seek, yet YouTube does send a seeked event and we
-        // propagate that to DBus as well
-        seeked(e) { update({seekedTo: Math.trunc(e.target.currentTime * 1e6)}); },
+        // when the audio volume changes or is muted
+        volumechange(e) { update({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
     };
 
-    videoElement = document.querySelector("video");
+    videoElement = $("video").get(0);
     for (let [event, handler] of Object.entries(eventHandlers))
         observers.push(new EventObserver(videoElement, event, handler));
 
@@ -80,8 +87,8 @@ function enterVideo() {
         muts.forEach(m => update({ LoopStatus: loopStatus() }));
     });
     loopObserver.observe(videoElement, {
-        attributes: true,
         subtree: false,
+        attributes: true,
         attributeFilter: ["loop"],
     });
     observers.push(loopObserver);
@@ -94,28 +101,25 @@ function enterVideo() {
     // Playlist related
     playlist = new Playlist(playlist);
 
-    let pl = document.querySelector("#player-playlist"),
-        plHeader = pl.querySelector(".playlist-header-content"),
-        plNodeList = pl.querySelectorAll("#playlist-autoscroll-list li");
-    if (plHeader) {
-        playlist.id = plHeader.dataset.fullListId;
-        playlist.title = plHeader.dataset.listTitle;
-    }
-    playlist.content = Array.from(plNodeList, li => ({
-            id: li.dataset.videoId,
-            title: li.dataset.videoTitle,
-            link: li.querySelector("a"),
-    }));
-    playlist.index = playlist.content.map(v => v.id).indexOf(video.id);
+    let pl = $("#playlist"),
+        plHeader = pl.find(".header");
+    if (plHeader.length) {
+        playlist.id = (new URL(location)).searchParams.get("list")
+        playlist.title = plHeader.find(".title").text();
 
-    if (playlist.content.length) {
-        const loopButton = document.querySelector(".toggle-loop");
+        const indexMessage = plHeader.find(".index-message").text().split(" / ");
+        playlist.index = Number.parseInt(indexMessage[0]) - 1;
+        playlist.length = Number.parseInt(indexMessage[1]);
+    }
+
+    if (playlist.length) {
+        const loopButton = $("#playlist-actions a").get(0);
         observers.push(new EventObserver(loopButton, "click", () => {
             playlist.loop = !playlist.loop
             update({ LoopStatus: loopStatus() });
         }));
 
-        const shuffleButton = document.querySelector(".shuffle-playlist");
+        const shuffleButton = $("#playlist-actions a").get(1);
         observers.push(new EventObserver(shuffleButton, "click", () => {
             playlist.shuffle = !playlist.shuffle
             update({ Shuffle: playlist.shuffle });
@@ -130,8 +134,8 @@ function enterVideo() {
     // that, but let's respect it by lying to MPRIS!
     video.Volume = 1;
 
-    video.CanGoNext = playlist.content.length && playlist.index < playlist.content.length - 1;
-    video.CanGoPrevious = playlist.content.length && playlist.index > 0;
+    video.CanGoNext = playlist.index < playlist.length - 1;
+    video.CanGoPrevious = playlist.index > 0;
 
     video.Rate = videoElement.playbackRate;
 
@@ -167,17 +171,19 @@ const COMMANDS = {
         videoElement.currentTime = videoElement.duration;
     },
 
-    playAt(index) {
-        if (playlist.content.length > index) {
-            let v = playlist.content[index];
-            if (v) v.link.click();
-        }
-    },
     Next() {
-        this.playAt(playlist.index + 1);
+        if (playlist.length && playlist.index < playlist.length - 1)
+            $(".ytp-next-button").get(0).click();
     },
     Prev() {
-        this.playAt(playlist.index - 1);
+        if (playlist.length && playlist.index > 0) {
+            if (videoElement.currentTime > 2)
+                // if the video is past its 2nd second pressing prev will start
+                // it from the beginning again, so we need to press twice with
+                // a bit of a delay between
+                setTimeout(() => $(".ytp-prev-button").get(0).click(), 100);
+            $(".ytp-prev-button").get(0).click();
+        }
     },
 
     Seek(offset) {
@@ -187,81 +193,91 @@ const COMMANDS = {
     },
     SetPosition({ id, position }) {
         // TODO: perhaps store the ID somewhere?
-        if (id === document.querySelector("[itemprop=videoId]").content)
+        if (id === (new URL(location)).searchParams.get("v"))
             videoElement.currentTime = position / 1e6;
     },
 
     Rate(what) {
         if (what > 0)
-            setPlaybackRate(what);
+            videoElement.playbackRate = what;
     },
 
-    Volume() { },
+    Volume(notMute) {
+        if ((!notMute && !videoElement.muted) || (notMute && videoElement.muted))
+            $(".ytp-mute-button").get(0).click();
+    },
     Fullscreen() { },
 
     Shuffle(yes) {
         if ((yes && !playlist.shuffle) || (!yes && playlist.shuffle))
-            document.querySelector(".shuffle-playlist").click();
+            $("#playlist-actions a").get(1).click();
     },
     LoopStatus(how) {
         switch (how) {
         case "None":
-            setLoopTrack(false);
-            setLoopPlaylist(false);
+            setLoop(false);
+            setPlaylistLoop(false);
             break;
 
         case "Track":
-            setLoopTrack(true);
+            setLoop(true);
             break;
 
         case "Playlist":
-            if (!playlist.content.length)
+            if (!playlist.length)
                 return;
-            setLoopTrack(false);
-            setLoopPlaylist(true);
+            setLoop(false);
+            setPlaylistLoop(true);
             break;
         }
     }
 }
 
-function setLoopTrack(yes) {
+function setPlaylistLoop(yes) {
+    if (playlist.length && ((yes && !playlist.loop) || (!yes && playlist.loop)))
+        $("#playlist-actions a").get(0).click();
+}
+
+function setLoop(yes) {
     if ((yes && videoElement.loop) || (!yes && !videoElement.loop))
         return;
 
     const rightClick = new MouseEvent("contextmenu", {
         bubbles: true,
         cancelable: true,
-        view: window,
         buttons: 2
     });
 
     // fake right click for the menu to show up
     videoElement.dispatchEvent(rightClick);
     // then click on the "Loop" button
-    document.querySelector(".ytp-contextmenu .ytp-menuitem:nth-child(4)").click();
-}
-
-function setLoopPlaylist(yes) {
-    if ((yes && !playlist.loop) || (!yes && playlist.loop))
-        document.querySelector(".toggle-loop").click();
+    $(".ytp-contextmenu .ytp-menuitem").get(3).click();
 }
 
 function setPlaybackRate(rate) {
-    if (!videoElement) return;
+    const closestRate = Math.ceil(rate * 4);
 
-    let closestRate = Math.ceil(rate * 4);
     // first make the settings menu appear
-    document.querySelector(".ytp-settings-button").click();
-    // then the "speed" menu
-    document.querySelector(".ytp-settings-menu .ytp-menuitem:nth-child(3)").click();
+    $(".ytp-settings-button").get(0).click();
+    // then the "speed" submenu
+    $(".ytp-settings-menu .ytp-menuitem").get(1).click();
 
+    // set a timeout because of animation delays
     setTimeout(() => {
-        document.querySelector(`.ytp-settings-menu .ytp-menuitem:nth-child(${closestRate})`).click();
+        // select the closest speed
+        $(".ytp-settings-menu .ytp-menuitem").get(closestRate - 1).click();
         // and close the settings menu again
-        setTimeout(() => document.querySelector(".ytp-settings-button").click(), 300);
+        $(".ytp-settings-button").get(0).click();
     }, 300);
 }
 
+
+const port = chrome.runtime.connect();
+port.onMessage.addListener(({ cmd, data }) => {
+    console.log("COMMAND", cmd);
+    if (videoElement)
+        COMMANDS[cmd](data);
+});
 
 function update(change) {
     port.postMessage({
@@ -276,50 +292,38 @@ function quit() {
 }
 
 
-const port = chrome.runtime.connect();
-port.onMessage.addListener(({ cmd, data }) => {
-    console.log("COMMAND", cmd);
-    if (videoElement)
-        COMMANDS[cmd](data);
-});
-
-let videoElement;
-let playlist = new Playlist();
-let observers = [];
-
-
-document.addEventListener("DOMContentLoaded", e => {
+window.addEventListener("DOMContentLoaded", e => {
     console.log({source: "youtube", type: e.type, url: location.href});
 
-    if (isVideo()) enterVideo();
+    prevUrl = new URL(location);
 });
 
-// https://youtube.github.io/spfjs/documentation/events/
-document.addEventListener("spfrequest", e => {
-    console.log({source: "youtube", type: e.type, data: e.detail});
+// When navigating between YouTube pages of different types.
+// window.addEventListener("yt-page-type-changed", e => {
+//     console.log({source: "youtube", type: e.type, url: location.href});
+// });
+
+// When a YouTube page finished loading.
+// There's also "yt-navigate-start" which fires too early or not at all for
+// cached pages; and "yt-navigate-finish" which also fires early.
+window.addEventListener("yt-page-data-updated", e => {
+    console.log({source: "youtube", type: e.type, url: location.href});
 
     observers.forEach(obs => obs.disconnect());
     observers = [];
 
-    const prevUrl = new URL(e.detail.previous);
-    const nextUrl = new URL(e.detail.url);
+    const nextUrl = new URL(location);
 
-    if (!isVideo(nextUrl) && isVideo(prevUrl)) {
+    if (!isVideo() && isVideo(prevUrl)) {
         videoElement = null;
-        quit();
+        quit()
     }
 
-    if (!isVideo(nextUrl) || (isVideo(prevUrl) && prevUrl.searchParams.get("list") !== nextUrl.searchParams.get("list")))
+    if (!isVideo() || (isVideo(prevUrl) && playlist.id !== nextUrl.searchParams.get("list")))
         playlist = new Playlist();
+
+    if (isVideo())
+        enterVideo();
+
+    prevUrl = nextUrl;
 });
-
-document.addEventListener("spfdone", e => {
-    console.log({source: "youtube", type: e.type, url: location.href});
-
-    if (isVideo()) enterVideo();
-});
-
-// window.addEventListener("unload", function() {
-//     if (isVideo())
-//         quit();
-// });

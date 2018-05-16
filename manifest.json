@@ -12,7 +12,7 @@
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
-      "js": ["jquery.min.js", "providers/youtube-2017.js"],
+      "js": ["jquery.min.js", "providers/youtube.js"],
       "run_at": "document_start"
     },
     {
