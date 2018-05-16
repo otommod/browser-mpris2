@@ -5,11 +5,12 @@ import os
 import sys
 
 XDG_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME",
-                                 os.path.expanduser("~/.config"))
+                                 default=os.path.expanduser("~/.config"))
 
-MESSAGE_HOSTS = os.path.join(XDG_CONFIG_HOME,
-                             "chromium",
-                             "NativeMessagingHosts")
+BROWSERS = [
+    os.path.join(XDG_CONFIG_HOME, "chromium"),
+    os.path.join(XDG_CONFIG_HOME, "google-chrome"),
+]
 
 
 def die(msg):
@@ -53,11 +54,16 @@ def main(args):
             "chrome-extension://" + ext_id + "/",
         ]
     }
-    manifest_path = os.path.join(MESSAGE_HOSTS, "org.mpris.browser_host.json")
 
-    os.makedirs(MESSAGE_HOSTS, exist_ok=True)
-    with open(manifest_path, "w") as f:
-        json.dump(manifest, f)
+    for browser in BROWSERS:
+        if not os.path.exists(browser):
+            continue
+        message_hosts = os.path.join(browser, "NativeMessagingHosts")
+        manifest_path = os.path.join(message_hosts, "org.mpris.browser_host.json")
+
+        os.makedirs(message_hosts, exist_ok=True)
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f)
 
 
 if __name__ == "__main__":
