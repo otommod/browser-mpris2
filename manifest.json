@@ -14,6 +14,11 @@
       "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
       "js": ["jquery.min.js", "providers/youtube.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["*://soundcloud.com/*"],
+      "js": ["providers/soundcloud.js"],
+      "run_at": "document_start"
     }
   ],
 
