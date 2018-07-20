@@ -296,7 +296,7 @@ class MediaPlayer2(DBusService):
                 invocation.return_value(GLib.Variant("(v)", (variant,)))
 
             self._set_callback_on("position", callback)
-            self._send_message("query", "position")
+            self._send_msg("query", "position")
 
         else:
             super().get_property(conn, sender, objpath, iface_name, prop_name,
@@ -314,7 +314,7 @@ class MediaPlayer2(DBusService):
                 invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
 
             self._set_callback_on("position", callback)
-            self._send_message("query", "position")
+            self._send_msg("query", "position")
 
         else:
             super().get_all_properties(conn, sender, objpath, iface_name,
@@ -323,7 +323,7 @@ class MediaPlayer2(DBusService):
     def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
                      invocation):
         if prop_name in ("Fullscreen", "Volume", "LoopStatus", "Shuffle", "Rate"):
-            self._send_message(prop_name, value)
+            self._send_msg(prop_name, value)
         else:
             setattr(self, prop_name, value)
         invocation.return_value(None)
@@ -349,33 +349,33 @@ class MediaPlayer2(DBusService):
         pass
 
     def Play(self):
-        self._send_message("Play")
+        self._send_msg("Play")
 
     def Pause(self):
-        self._send_message("Pause")
+        self._send_msg("Pause")
 
     def PlayPause(self):
-        self._send_message("PlayPause")
+        self._send_msg("PlayPause")
 
     def Stop(self):
-        self._send_message("Stop")
+        self._send_msg("Stop")
 
     def Seek(self, offset):
-        self._send_message("Seek", offset)
+        self._send_msg("Seek", offset)
 
     def SetPosition(self, trackid, position):
         if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
             ytid = unescape_object_path(trackid[4:])
-            self._send_message("SetPosition",
-                               {"id": ytid, "position": position})
+            self._send_msg("SetPosition",
+                           {"id": ytid, "position": position})
 
     def Next(self):
-        self._send_message("Next")
+        self._send_msg("Next")
 
     def Previous(self):
-        self._send_message("Prev")
+        self._send_msg("Prev")
 
-    def _send_message(self, cmd, data=None):
+    def _send_msg(self, cmd, data=None):
         msg = {
             "tabId": self.__tabid,
             "cmd": cmd,
@@ -385,25 +385,22 @@ class MediaPlayer2(DBusService):
         encode_msg(msg)
 
     def _handle_msg(self, msg):
-        changes = []
+        changes = set()
 
         for key, val in msg["data"].items():
             if key == "id":
                 track_path = "/ID/" + escape_object_path(val)
                 self.Metadata["mpris:trackid"] = GLib.Variant("o", track_path)
-                changes.append("Metadata")
-            elif key == "url":
-                self.Metadata["xesam:url"] = GLib.Variant("s", val)
-                changes.append("Metadata")
-            elif key == "thumb":
-                self.Metadata["mpris:artUrl"] = GLib.Variant("s", val)
-                changes.append("Metadata")
-            elif key == "title":
-                self.Metadata["xesam:title"] = GLib.Variant("s", val)
-                changes.append("Metadata")
-            elif key == "duration":
-                self.Metadata["mpris:length"] = GLib.Variant("x", val)
-                changes.append("Metadata")
+                changes.add("Metadata")
+            elif key == "mpris:length":
+                self.Metadata[key] = GLib.Variant("x", val)
+                changes.add("Metadata")
+            elif key == "xesam:artist":
+                self.Metadata[key] = GLib.Variant("as", val)
+                changes.add("Metadata")
+            elif key.startswith(("mpris:", "xesam:")):
+                self.Metadata[key] = GLib.Variant("s", val)
+                changes.add("Metadata")
 
             elif key == "position":
                 pass
@@ -413,7 +410,7 @@ class MediaPlayer2(DBusService):
 
             else:
                 setattr(self, key, val)
-                changes.append(key)
+                changes.add(key)
 
             if key in self.__callbacks:
                 for cb in self.__callbacks[key]:

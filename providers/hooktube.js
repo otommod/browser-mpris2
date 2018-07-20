@@ -14,30 +14,30 @@ function loopStatus() {
 function enterVideo() {
     let video = {
         id: (new URL(location)).searchParams.get("v"),
-        url: location.href,
-        duration: (videoElement.duration * 10e6) || 0,
-        title: document.getElementById("video-title").textContent,
+        "mpris:length": (videoElement.duration * 10e6) || 0,
+        "xesam:url": location.href,
+        "xesam:title": document.getElementById("video-title").textContent,
         PlaybackStatus: "Playing"
     };
-    video.thumb = "https://i.ytimg.com/vi/" + video.id +"/hqdefault.jpg";
+    video["mpris:artUrl"] = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
 
     const eventHandlers = {
-        play()      { update({PlaybackStatus: "Playing"}); },
-        playing()   { update({PlaybackStatus: "Playing"}); },
-        pause()     { update({PlaybackStatus: "Paused"}); },
-        ended()     { update({PlaybackStatus: "Stopped"}); },
+        play()      { update({ PlaybackStatus: "Playing" }); },
+        playing()   { update({ PlaybackStatus: "Playing" }); },
+        pause()     { update({ PlaybackStatus: "Paused" }); },
+        ended()     { update({ PlaybackStatus: "Stopped" }); },
 
         // when the playback speed changes
         ratechange(e) { update({ Rate: e.target.playbackRate }); },
 
         // when the audio volume changes or is muted
-        volumechange(e) { update({Volume: e.target.muted ? 0.0 : e.target.volume}); },
+        volumechange(e) { update({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
 
         // a change in the duration of the media
-        durationchange(e) { update({duration: Math.trunc(e.target.duration * 1e6)}); },
+        durationchange(e) { update({ "mpris:length": Math.trunc(e.target.duration * 1e6) }); },
 
         // when a seek operation completes
-        seeked(e) { update({seekedTo: Math.trunc(e.target.currentTime * 1e6)}); },
+        seeked(e) { update({ seekedTo: Math.trunc(e.target.currentTime * 1e6) }); },
     };
 
     for (let [event, handler] of Object.entries(eventHandlers))
@@ -141,12 +141,6 @@ function update(change) {
     });
 }
 
-function quit() {
-    port.postMessage({
-        source: "youtube", type: "quit",
-    });
-}
-
 window.addEventListener("load", () => {
     const videoSourcElement = document.getElementById("video-source");
     if (videoSourcElement == null)
@@ -164,9 +158,4 @@ window.addEventListener("load", () => {
         });
     });
     videoObserver.observe(videoSourcElement, { childList: true });
-});
-
-window.addEventListener("unload", () => {
-    if (isVideo())
-        quit();
 });

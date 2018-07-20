@@ -51,10 +51,10 @@ function loopStatus() {
 function enterVideo() {
     let video = {
         id: (new URL(location)).searchParams.get("v"),
-        url: location.href,
-        title: $("title").text().slice(0, -10),
+        "xesam:url": location.href,
+        "xesam:title": $("title").text().slice(0, -10),
     };
-    video.thumb = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
+    video["mpris:artUrl"] = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
 
     const eventHandlers = {
         play() { update({ PlaybackStatus: "Playing" }); },
@@ -73,7 +73,7 @@ function enterVideo() {
         ratechange(e) { update({ Rate: e.target.playbackRate }); },
 
         // a change in the duration of the media
-        durationchange(e) { update({ duration: Math.trunc(e.target.duration * 1e6)  }); },
+        durationchange(e) { update({ "mpris:length": Math.trunc(e.target.duration * 1e6)  }); },
 
         // when the audio volume changes or is muted
         volumechange(e) { update({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
@@ -139,9 +139,7 @@ function enterVideo() {
 
     video.Rate = videoElement.playbackRate;
 
-    port.postMessage({
-        source: "youtube", type: "change", data: video
-    });
+    update(video);
 }
 
 
