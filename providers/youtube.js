@@ -146,8 +146,8 @@ function enterVideo() {
 const COMMANDS = {
     query(attr) {
         switch (attr) {
-        case "position":
-            update({ position: Math.trunc(videoElement.currentTime * 1e6) });
+        case "Position":
+            update({ Position: Math.trunc(videoElement.currentTime * 1e6) });
             break;
         }
     },

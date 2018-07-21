@@ -53,7 +53,7 @@ def decode_msg():
         raise ValueError("unexpected end of input")
 
     # Unpack message length as 4 byte integer.
-    length = struct.unpack('@i', length_bytes)[0]
+    length = struct.unpack("@i", length_bytes)[0]
 
     # Read the text (JSON object) of the message.
     text = sys.stdin.read(length).decode("utf-8")
@@ -66,8 +66,7 @@ class DBusService:
         self._name = name
         self._path = path
 
-        self.__reg_ids = []
-
+        self.__registrations = []
         self._properties = {}
         self._methods = {
             # "org.freedesktop.DBus.Properties": {
@@ -91,14 +90,14 @@ class DBusService:
                 if prop.flags & Gio.DBusPropertyInfoFlags.READABLE
             }
 
-            self.__reg_ids.append(
+            self.__registrations.append(
                 self._conn.register_object(path, iface, self.on_method_call)
             )
 
         self.__own_id = Gio.bus_own_name_on_connection(self._conn, name, flags)
 
     def unpublish(self):
-        for i in self.__reg_ids:
+        for i in self.__registrations:
             self._conn.unregister_object(i)
         Gio.bus_unown_name(self.__own_id)
         self._conn.close_sync()
@@ -106,7 +105,6 @@ class DBusService:
     def on_method_call(self, conn, sender, objpath, iface_name, method_name,
                        params, invocation):
 
-        # FIXME: move somewhere else
         if iface_name == "org.freedesktop.DBus.Properties":
             if method_name == "Get":
                 self.get_property(conn, sender, objpath, *params, invocation)
@@ -161,7 +159,7 @@ class DBusService:
     # SIGNALS
     def PropertiesChanged(self, iface_name, changed_props, invalidated_props):
         # we assume readable properties
-        typed_changed_props = {
+        changed_props = {
             p: GLib.Variant(self._properties[iface_name][p], v)
             for p, v in changed_props.items()
         }
@@ -171,116 +169,109 @@ class DBusService:
             self._path,
             "org.freedesktop.DBus.Properties",
             "PropertiesChanged",
-            GLib.Variant.new_tuple(
-                GLib.Variant("s", iface_name),
-                GLib.Variant("a{sv}", typed_changed_props),
-                GLib.Variant("as", invalidated_props)))
+            GLib.Variant("(sa{sv}as)", (
+                iface_name, changed_props, invalidated_props)))
 
 
 class MediaPlayer2(DBusService):
     """
+    <!DOCTYPE node PUBLIC
+      "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+      "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
     <node>
     <interface name="org.mpris.MediaPlayer2">
-        <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="true"/>
-
-        <method name="Raise"/>
-        <method name="Quit"/>
-
-        <property name="Identity"            type="s"  access="read"/>
-        <!--
-        <property name="DesktopEntry"        type="s"  access="read">
+        <property name="CanQuit"             type="b"  access="read"/>
+        <property name="CanRaise"            type="b"  access="read"/>
+        <property name="CanSetFullscreen"    type="b"  access="read">
             <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
-        -->
-
-        <property name="CanRaise"            type="b"  access="read"/>
-        <property name="CanQuit"             type="b"  access="read"/>
-        <property name="Fullscreen"          type="b"  access="readwrite"/>
-        <property name="CanSetFullscreen"    type="b"  access="read"/>
-        <property name="SupportedUriSchemes" type="as" access="read"/>
-        <property name="SupportedMimeTypes"  type="as" access="read"/>
+        <!-- <property name="DesktopEntry"        type="s"  access="read"> -->
+        <!--    <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/> -->
+        <!-- </property> -->
+        <property name="Fullscreen"          type="b"  access="readwrite">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
         <property name="HasTrackList"        type="b"  access="read"/>
+        <property name="Identity"            type="s"  access="read"/>
+        <property name="SupportedMimeTypes"  type="as" access="read"/>
+        <property name="SupportedUriSchemes" type="as" access="read"/>
+
+        <method name="Quit"/>
+        <method name="Raise"/>
     </interface>
 
     <interface name="org.mpris.MediaPlayer2.Player">
-        <method name="Play"/>
-        <method name="Pause"/>
-        <method name="PlayPause"/>
-        <method name="Stop"/>
-
-        <method name="Next"/>
-        <method name="Previous"/>
-
-        <method name="Seek">
-            <arg direction="in" type="x" name="Offset"/>
-        </method>
-
-        <method name="SetPosition">
-            <arg direction="in" type="o" name="TrackId"/>
-            <arg direction="in" type="x" name="Position"/>
-        </method>
-
-        <method name="OpenUri">
-            <arg direction="in" type="s" name="Uri"/>
-        </method>
-
-        <property name="PlaybackStatus" type="s"     access="read"/>
-
-        <property name="Position"       type="x"     access="read">
-            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
-        </property>
-
-        <property name="Metadata"       type="a{sv}" access="read"/>
-        <property name="Volume"         type="d"     access="readwrite"/>
-        <property name="Rate"           type="d"     access="readwrite"/>
-        <property name="MinimumRate"    type="d"     access="read"/>
-        <property name="MaximumRate"    type="d"     access="read"/>
-        <property name="CanGoNext"      type="b"     access="read"/>
-        <property name="CanGoPrevious"  type="b"     access="read"/>
-        <property name="CanPlay"        type="b"     access="read"/>
-        <property name="CanPause"       type="b"     access="read"/>
-        <property name="CanSeek"        type="b"     access="read"/>
         <property name="CanControl"     type="b"     access="read">
             <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
         </property>
-
-        <property name="Shuffle"        type="b"     access="readwrite">
-            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
-        </property>
+        <property name="CanGoNext"      type="b"     access="read"/>
+        <property name="CanGoPrevious"  type="b"     access="read"/>
+        <property name="CanPause"       type="b"     access="read"/>
+        <property name="CanPlay"        type="b"     access="read"/>
+        <property name="CanSeek"        type="b"     access="read"/>
         <property name="LoopStatus"     type="s"     access="readwrite">
             <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
         </property>
+        <property name="MaximumRate"    type="d"     access="read"/>
+        <property name="Metadata"       type="a{sv}" access="read"/>
+        <property name="MinimumRate"    type="d"     access="read"/>
+        <property name="PlaybackStatus" type="s"     access="read"/>
+        <property name="Rate"           type="d"     access="readwrite"/>
+        <property name="Position"       type="x"     access="read">
+            <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+        </property>
+        <property name="Shuffle"        type="b"     access="readwrite">
+            <annotation name="org.mpris.MediaPlayer2.property.optional" value="true"/>
+        </property>
+        <property name="Volume"         type="d"     access="readwrite"/>
 
         <signal name="Seeked">
             <arg name="Position" type="x"/>
         </signal>
+
+        <method name="Next"/>
+        <method name="OpenUri">
+            <arg direction="in" type="s" name="Uri"/>
+        </method>
+        <method name="Pause"/>
+        <method name="Play"/>
+        <method name="PlayPause"/>
+        <method name="Previous"/>
+        <method name="Seek">
+            <arg direction="in" type="x" name="Offset"/>
+        </method>
+        <method name="SetPosition">
+            <arg direction="in" type="o" name="TrackId"/>
+            <arg direction="in" type="x" name="Position"/>
+        </method>
+        <method name="Stop"/>
     </interface>
     </node>
     """
 
-    def __init__(self, conn, tabid, name, objpath):
+    def __init__(self, conn, tabid, name):
         self.__tabid = tabid
         self.__callbacks = defaultdict(list)
 
-        self.CanRaise = False
         self.CanQuit = False
+        self.CanRaise = False
+        self.Fullscreen = False
+        self.HasTrackList = False
         self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
         self.SupportedMimeTypes = [
             "audio/mpeg",
             "audio/x-flac",
             # TODO: add more
         ]
-        self.HasTrackList = False
 
-        self.Fullscreen = False
+        self.LoopStatus = "None"
         self.Metadata = {}
         self.PlaybackStatus = "Stopped"
         self.Rate = 1
-        self.Volume = 1
         self.Shuffle = False
-        self.LoopStatus = "None"
+        self.Volume = 1
 
-        super().__init__(conn, name, objpath)
+        super().__init__(conn, name, "/org/mpris/MediaPlayer2")
 
     def _set_callback_on(self, prop, callback):
         self.__callbacks[prop].append(callback)
@@ -295,8 +286,8 @@ class MediaPlayer2(DBusService):
                 variant = GLib.Variant("x", pos)
                 invocation.return_value(GLib.Variant("(v)", (variant,)))
 
-            self._set_callback_on("position", callback)
-            self._send_msg("query", "position")
+            self._set_callback_on("Position", callback)
+            self._send_msg("query", "Position")
 
         else:
             super().get_property(conn, sender, objpath, iface_name, prop_name,
@@ -313,8 +304,8 @@ class MediaPlayer2(DBusService):
                 non_async["Position"] = GLib.Variant("x", pos)
                 invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
 
-            self._set_callback_on("position", callback)
-            self._send_msg("query", "position")
+            self._set_callback_on("Position", callback)
+            self._send_msg("query", "Position")
 
         else:
             super().get_all_properties(conn, sender, objpath, iface_name,
@@ -322,21 +313,17 @@ class MediaPlayer2(DBusService):
 
     def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
                      invocation):
-        if prop_name in ("Fullscreen", "Volume", "LoopStatus", "Shuffle", "Rate"):
-            self._send_msg(prop_name, value)
-        else:
-            setattr(self, prop_name, value)
+        self._send_msg(prop_name, value)
         invocation.return_value(None)
 
     # SIGNALS
     def Seeked(self, position):
         self._conn.emit_signal(
             None,
-            # FIXME: don't hardcode these
             "/org/mpris/MediaPlayer2",
             "org.mpris.MediaPlayer2.Player",
             "Seeked",
-            GLib.Variant.new_tuple(GLib.Variant("x", position)))
+            GLib.Variant("(x)", (position,)))
 
     # METHODS
     def Raise(self):
@@ -431,8 +418,8 @@ class Youtube(MediaPlayer2):
     # FIXME:
     __doc__ = MediaPlayer2.__doc__
 
-    def __init__(self, conn, tabid, name, objpath):
-        super().__init__(conn, tabid, name, objpath)
+    def __init__(self, conn, tabid, name):
+        super().__init__(conn, tabid, name)
 
         self.Identity = "youtube"
 
@@ -464,7 +451,7 @@ def main():
         msg = decode_msg()
         debug(msg)
 
-        if msg["type"] not in ("change", "update", "quit"):
+        if msg["type"] not in ("update", "quit"):
             return True
 
         tabid = msg["tabId"]
@@ -493,17 +480,14 @@ def main():
                 # unique names
                 name += ".tab%d" % tabid
 
-            player = Youtube(conn, tabid, name, "/org/mpris/MediaPlayer2")
+            player = Youtube(conn, tabid, name)
             players[tabid] = player
-
-        if msg["type"] == "change":
-            player._handle_msg(msg)
 
         if msg["type"] == "update":
             player._handle_msg(msg)
 
         if msg["type"] == "quit":
-            players[tabid].unpublish()
+            player.unpublish()
             del players[tabid]
 
         # otherwise GLib will remove our watch
@@ -515,5 +499,5 @@ def main():
 
     mainloop.run()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
