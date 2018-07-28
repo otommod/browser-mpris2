@@ -12,39 +12,42 @@ function loopStatus() {
 }
 
 function enterVideo() {
+    const id = (new URL(location)).searchParams.get("v");
     let video = {
-        id: (new URL(location)).searchParams.get("v"),
-        "mpris:length": (videoElement.duration * 10e6) || 0,
-        "xesam:url": location.href,
-        "xesam:title": document.getElementById("video-title").textContent,
-        PlaybackStatus: "Playing"
+        Metadata: {
+            "mpris:trackid": id,
+            "mpris:length": (videoElement.duration * 10e6) || 0,
+            "mpris:artUrl": `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+            "xesam:url": location.href,
+            "xesam:title": document.getElementById("video-title").textContent,
+        },
+        PlaybackStatus: "Playing",
     };
-    video["mpris:artUrl"] = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
 
     const eventHandlers = {
-        play()      { update({ PlaybackStatus: "Playing" }); },
-        playing()   { update({ PlaybackStatus: "Playing" }); },
-        pause()     { update({ PlaybackStatus: "Paused" }); },
-        ended()     { update({ PlaybackStatus: "Stopped" }); },
+        play()      { changed({ PlaybackStatus: "Playing" }); },
+        playing()   { changed({ PlaybackStatus: "Playing" }); },
+        pause()     { changed({ PlaybackStatus: "Paused" }); },
+        ended()     { changed({ PlaybackStatus: "Stopped" }); },
 
         // when the playback speed changes
-        ratechange(e) { update({ Rate: e.target.playbackRate }); },
+        ratechange(e) { changed({ Rate: e.target.playbackRate }); },
 
         // when the audio volume changes or is muted
-        volumechange(e) { update({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
+        volumechange(e) { changed({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
 
         // a change in the duration of the media
-        durationchange(e) { update({ "mpris:length": Math.trunc(e.target.duration * 1e6) }); },
+        // durationchange(e) { update({ "mpris:length": Math.trunc(e.target.duration * 1e6) }); },
 
         // when a seek operation completes
-        seeked(e) { update({ seekedTo: Math.trunc(e.target.currentTime * 1e6) }); },
+        seeked(e) { seeked(Math.trunc(e.target.currentTime * 1e6)); },
     };
 
     for (let [event, handler] of Object.entries(eventHandlers))
         videoElement.addEventListener(event, handler);
 
     const loopObserver = new MutationObserver(muts => {
-        muts.forEach(m => update({ LoopStatus: loopStatus() }));
+        muts.forEach(m => changed({ LoopStatus: loopStatus() }));
     });
     loopObserver.observe(videoElement, {
         attributes: true,
@@ -54,22 +57,37 @@ function enterVideo() {
 
     document.addEventListener("webkitfullscreenchange", e => {
         // We'll assume that it's the video that was made fullscreen.
-        update({ Fullscreen: !!document.webkitFullscreenElement });
+        changed({ Fullscreen: !!document.webkitFullscreenElement });
     });
 
     video.LoopStatus = loopStatus();
     video.Volume = videoElement.volume;
     video.Rate = videoElement.playbackRate;
 
-    update(video);
+    changed(video);
 }
-
 const COMMANDS = {
-    query(attr) {
-        switch (attr) {
+    Get(_, propName) {
+        switch (propName) {
         case "Position":
-            update({ Position: Math.trunc(videoElement.currentTime *1e6) });
+            return Math.trunc(videoElement.currentTime * 1e6);
+        }
+    },
+
+    Set(_, propName, newValue) {
+        switch (propName) {
+        case "Rate":
+            if (newValue > 0)
+                videoElement.playbackRate = newValue;
             break;
+
+        case "Volume":
+            // we only mute (if needed); see the other comment on volume
+            videoElement.muted = !newValue;
+            break;
+
+        case "LoopStatus":
+            setLoop(newValue !== "None");
         }
     },
 
@@ -91,34 +109,17 @@ const COMMANDS = {
     },
 
     Next() { },
-    Prev() { },
+    Previous() { },
 
     Seek(offset) {
         videoElement.currentTime += offset / 1e6;
-        if (videoElement.currentTime >= videoElement.duration)
-            this.Next();
     },
-    SetPosition({ id, position }) {
+    SetPosition(id, position) {
         // TODO: perhaps store the ID somewhere?
         if (id === (new URL(location)).searchParams.get("v"))
             videoElement.currentTime = position / 1e6;
     },
-
-    Rate(what) {
-        if (what > 0)
-            videoElement.playbackRate = what;
-    },
-
-    Volume(notMute) {
-        videoElement.muted = !notMute;
-    },
-    Fullscreen() { },
-
-    Shuffle(yes) { },
-    LoopStatus(how) {
-        setLoop(how !== "None");
-    }
-};
+}
 
 function setLoop(yes) {
     if ((yes && videoElement.loop) || (!yes && !videoElement.loop))
@@ -129,15 +130,29 @@ function setLoop(yes) {
 
 
 const port = chrome.runtime.connect();
-port.onMessage.addListener(({ cmd, data }) => {
-    console.log("COMMAND", cmd);
-    if (videoElement)
-        COMMANDS[cmd](data);
+port.onMessage.addListener(cmd => {
+    console.log("MethodCall", cmd);
+    if (videoElement) {
+        const result = COMMANDS[cmd.method](...cmd.args);
+        methodReturn(cmd.method, result);
+    }
 });
 
-function update(change) {
+function changed(newValues) {
     port.postMessage({
-        source: "hooktube", type: "update", data: change,
+        source: "hooktube", type: "changed", args: [newValues],
+    });
+}
+
+function seeked(position) {
+    port.postMessage({
+        source: "hooktube", type: "seeked", args: [position],
+    });
+}
+
+function methodReturn(method, args) {
+    port.postMessage({
+        source: "hooktube", type: "return", method, args
     });
 }
 

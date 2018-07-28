@@ -49,42 +49,47 @@ function loopStatus() {
 }
 
 function enterVideo() {
+    const id = (new URL(location)).searchParams.get("v");
     let video = {
-        id: (new URL(location)).searchParams.get("v"),
-        "xesam:url": location.href,
-        "xesam:title": $("title").text().slice(0, -10),
+        Metadata: {
+            "mpris:trackid": id,
+            "mpris:artUrl": `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+            "xesam:url": location.href,
+            "xesam:title": $("title").text().slice(0, -10),
+        },
+        PlaybackStatus: "Playing",
     };
-    video["mpris:artUrl"] = `https://i.ytimg.com/vi/${video.id}/hqdefault.jpg`;
 
     const eventHandlers = {
-        play() { update({ PlaybackStatus: "Playing" }); },
-        playing() { update({ PlaybackStatus: "Playing" }); },
-        pause() { update({ PlaybackStatus: "Paused" }); },
-        ended() { update({ PlaybackStatus: "Stopped" }); },
+        play() { changed({ PlaybackStatus: "Playing" }); },
+        playing() { changed({ PlaybackStatus: "Playing" }); },
+        pause() { changed({ PlaybackStatus: "Paused" }); },
+        ended() { changed({ PlaybackStatus: "Stopped" }); },
 
         // when a seek operation completes
         // FIXME: it seems that YouTube is "sending" too many seeked events
         // e.g., according to mpris Playing from the beginning after being
         // Stopped should not be considered a Seek, yet YouTube does send a
         // seeked event and we propagate that to DBus as well
-        seeked(e) { update({ seekedTo: Math.trunc(e.target.currentTime * 1e6)  }); },
+        seeked(e) { seeked(Math.trunc(e.target.currentTime * 1e6)); },
 
         // when the playback speed changes
-        ratechange(e) { update({ Rate: e.target.playbackRate }); },
+        ratechange(e) { changed({ Rate: e.target.playbackRate }); },
 
         // a change in the duration of the media
-        durationchange(e) { update({ "mpris:length": Math.trunc(e.target.duration * 1e6)  }); },
+        // durationchange(e) { update({ "mpris:length": Math.trunc(e.target.duration * 1e6) }); },
 
         // when the audio volume changes or is muted
-        volumechange(e) { update({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
+        volumechange(e) { changed({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
     };
 
     videoElement = $("video").get(0);
     for (let [event, handler] of Object.entries(eventHandlers))
         observers.push(new EventObserver(videoElement, event, handler));
+    video.Metadata["mpris:length"] = Math.trunc(videoElement.duration * 1e6);
 
     const loopObserver = new MutationObserver(muts => {
-        muts.forEach(m => update({ LoopStatus: loopStatus() }));
+        muts.forEach(m => changed({ LoopStatus: loopStatus() }));
     });
     loopObserver.observe(videoElement, {
         subtree: false,
@@ -95,7 +100,7 @@ function enterVideo() {
 
     observers.push(new EventObserver(document, "webkitfullscreenchange", e => {
         // We'll assume that it's the video that was made fullscreen.
-        update({ Fullscreen: !!document.webkitFullscreenElement });
+        changed({ Fullscreen: !!document.webkitFullscreenElement });
     }));
 
     // Playlist related
@@ -116,13 +121,13 @@ function enterVideo() {
         const loopButton = $("#playlist-actions a").get(0);
         observers.push(new EventObserver(loopButton, "click", () => {
             playlist.loop = !playlist.loop
-            update({ LoopStatus: loopStatus() });
+            changed({ LoopStatus: loopStatus() });
         }));
 
         const shuffleButton = $("#playlist-actions a").get(1);
         observers.push(new EventObserver(shuffleButton, "click", () => {
             playlist.shuffle = !playlist.shuffle
-            update({ Shuffle: playlist.shuffle });
+            changed({ Shuffle: playlist.shuffle });
         }));
     }
 
@@ -139,24 +144,62 @@ function enterVideo() {
 
     video.Rate = videoElement.playbackRate;
 
-    update(video);
+    changed(video);
 }
 
 
 const COMMANDS = {
-    query(attr) {
-        switch (attr) {
+    Get(_, propName) {
+        switch (propName) {
         case "Position":
-            update({ Position: Math.trunc(videoElement.currentTime * 1e6) });
-            break;
+            return Math.trunc(videoElement.currentTime * 1e6);
         }
     },
 
-    Play() {
-        videoElement.play();
+    Set(_, propName, newValue) {
+        switch (propName) {
+        case "Rate":
+            setPlaybackRate(newValue);
+            break;
+
+        case "Volume":
+            // we only mute (if needed); see the other comment on volume
+            if ((!newValue && !videoElement.muted) || (newValue && videoElement.muted))
+                $(".ytp-mute-button").get(0).click();
+            break;
+
+        case "Shuffle":
+            if ((newValue && !playlist.shuffle) || (!newValue && playlist.shuffle))
+                $("#playlist-actions a").get(1).click();
+            break;
+
+        case "LoopStatus":
+            switch (newValue) {
+            case "None":
+                setLoop(false);
+                setPlaylistLoop(false);
+                break;
+            case "Track":
+                setLoop(true);
+                break;
+            case "Playlist":
+                if (!playlist.length)
+                    return;
+                setLoop(false);
+                setPlaylistLoop(true);
+                break;
+            }
+
+        default:
+        case "Fullscreen":
+        }
     },
+
     Pause() {
         videoElement.pause();
+    },
+    Play() {
+        videoElement.play();
     },
     PlayPause() {
         if (videoElement.paused || videoElement.ended) {
@@ -173,7 +216,7 @@ const COMMANDS = {
         if (playlist.length && playlist.index < playlist.length - 1)
             $(".ytp-next-button").get(0).click();
     },
-    Prev() {
+    Previous() {
         if (playlist.length && playlist.index > 0) {
             if (videoElement.currentTime > 2)
                 // if the video is past its 2nd second pressing prev will start
@@ -189,46 +232,11 @@ const COMMANDS = {
         if (videoElement.currentTime >= videoElement.duration)
             this.Next();
     },
-    SetPosition({ id, position }) {
+    SetPosition(id, position) {
         // TODO: perhaps store the ID somewhere?
         if (id === (new URL(location)).searchParams.get("v"))
             videoElement.currentTime = position / 1e6;
     },
-
-    Rate(what) {
-        if (what > 0)
-            videoElement.playbackRate = what;
-    },
-
-    Volume(notMute) {
-        if ((!notMute && !videoElement.muted) || (notMute && videoElement.muted))
-            $(".ytp-mute-button").get(0).click();
-    },
-    Fullscreen() { },
-
-    Shuffle(yes) {
-        if ((yes && !playlist.shuffle) || (!yes && playlist.shuffle))
-            $("#playlist-actions a").get(1).click();
-    },
-    LoopStatus(how) {
-        switch (how) {
-        case "None":
-            setLoop(false);
-            setPlaylistLoop(false);
-            break;
-
-        case "Track":
-            setLoop(true);
-            break;
-
-        case "Playlist":
-            if (!playlist.length)
-                return;
-            setLoop(false);
-            setPlaylistLoop(true);
-            break;
-        }
-    }
 }
 
 function setPlaylistLoop(yes) {
@@ -253,7 +261,9 @@ function setLoop(yes) {
 }
 
 function setPlaybackRate(rate) {
-    const closestRate = Math.ceil(rate * 4);
+    if (rate <= 0)
+        return;
+    const closestRate = rate <= 1.75 ? Math.ceil(rate * 4) : 7;
 
     // first make the settings menu appear
     $(".ytp-settings-button").get(0).click();
@@ -271,15 +281,29 @@ function setPlaybackRate(rate) {
 
 
 const port = chrome.runtime.connect();
-port.onMessage.addListener(({ cmd, data }) => {
-    console.log("COMMAND", cmd);
-    if (videoElement)
-        COMMANDS[cmd](data);
+port.onMessage.addListener(cmd => {
+    console.log("MethodCall", cmd);
+    if (videoElement) {
+        const result = COMMANDS[cmd.method](...cmd.args);
+        methodReturn(cmd.method, result);
+    }
 });
 
-function update(change) {
+function changed(newValues) {
     port.postMessage({
-        source: "youtube", type: "update", data: change,
+        source: "youtube", type: "changed", args: [newValues],
+    });
+}
+
+function seeked(position) {
+    port.postMessage({
+        source: "youtube", type: "seeked", args: [position],
+    });
+}
+
+function methodReturn(method, args) {
+    port.postMessage({
+        source: "youtube", type: "return", method, args
     });
 }
 

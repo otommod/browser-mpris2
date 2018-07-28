@@ -3,7 +3,7 @@
 import json
 import struct
 import sys
-from collections import defaultdict
+from functools import partial
 
 from gi.repository import Gio, GLib
 
@@ -68,19 +68,13 @@ class DBusService:
 
         self.__registrations = []
         self._properties = {}
-        self._methods = {
-            # "org.freedesktop.DBus.Properties": {
-            #     "Get": ("ss", ("v",)),
-            #     "GetAll": ("s", ("a{sv}",)),
-            #     "Set": ("ssv", ()),
-            # }
-        }
+        self._methods = {}
 
         node_info = Gio.DBusNodeInfo.new_for_xml(self.__doc__)
         for iface in node_info.interfaces:
             self._methods[iface.name] = {
-                meth.name: (tuple(a.signature for a in meth.out_args),
-                            tuple(a.signature for a in meth.in_args))
+                meth.name: (tuple(a.signature for a in meth.in_args),
+                            tuple(a.signature for a in meth.out_args))
                 for meth in iface.methods
             }
 
@@ -122,16 +116,16 @@ class DBusService:
                 for a, sig in zip(params.unpack(), in_args)]
 
         try:
-            res = getattr(self, method_name)(*args)
+            retval = getattr(self, method_name)(*args)
 
             if not out_args:
-                res = None
+                retval = None
             elif len(out_args) == 1:
-                res = GLib.Variant("(%s)" % "".join(out_args), (res,))
+                retval = GLib.Variant("(%s)" % "".join(out_args), (retval,))
             else:
-                res = GLib.Variant("(%s)" % "".join(out_args), res)
+                retval = GLib.Variant("(%s)" % "".join(out_args), retval)
 
-            invocation.return_value(res)
+            invocation.return_value(retval)
 
         except Exception as e:
             e_type = type(e).__name__
@@ -249,32 +243,22 @@ class MediaPlayer2(DBusService):
     </node>
     """
 
-    def __init__(self, conn, tabid, name):
+    def __init__(self, conn, name, tabid):
         self.__tabid = tabid
-        self.__callbacks = defaultdict(list)
-
-        self.CanQuit = False
-        self.CanRaise = False
-        self.Fullscreen = False
-        self.HasTrackList = False
-        self.SupportedUriSchemes = ["http", "https", "ftp", "file"]
-        self.SupportedMimeTypes = [
-            "audio/mpeg",
-            "audio/x-flac",
-            # TODO: add more
-        ]
-
-        self.LoopStatus = "None"
-        self.Metadata = {}
-        self.PlaybackStatus = "Stopped"
-        self.Rate = 1
-        self.Shuffle = False
-        self.Volume = 1
-
+        self.__position_callbacks = []
         super().__init__(conn, name, "/org/mpris/MediaPlayer2")
 
-    def _set_callback_on(self, prop, callback):
-        self.__callbacks[prop].append(callback)
+    def __getattr__(self, attr):
+        if any(attr in iface for iface in self._methods.values()):
+            if attr == "SetPosition":
+                def SetPosition(trackid, position):
+                    if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
+                        self._send_msg("SetPosition",
+                                       unescape_object_path(trackid[4:]),
+                                       position)
+                return SetPosition
+            return partial(self._send_msg, attr)
+        return super().__getattr__(attr)
 
     # PROPERTIES
     def get_property(self, conn, sender, objpath, iface_name, prop_name,
@@ -286,8 +270,8 @@ class MediaPlayer2(DBusService):
                 variant = GLib.Variant("x", pos)
                 invocation.return_value(GLib.Variant("(v)", (variant,)))
 
-            self._set_callback_on("Position", callback)
-            self._send_msg("query", "Position")
+            self.__position_callbacks.append(callback)
+            self._send_msg("Get", "", "Position")
 
         else:
             super().get_property(conn, sender, objpath, iface_name, prop_name,
@@ -304,8 +288,8 @@ class MediaPlayer2(DBusService):
                 non_async["Position"] = GLib.Variant("x", pos)
                 invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
 
-            self._set_callback_on("Position", callback)
-            self._send_msg("query", "Position")
+            self.__position_callbacks.append(callback)
+            self._send_msg("Get", "", "Position")
 
         else:
             super().get_all_properties(conn, sender, objpath, iface_name,
@@ -313,116 +297,98 @@ class MediaPlayer2(DBusService):
 
     def set_property(self, conn, sender, objpath, iface_name, prop_name, value,
                      invocation):
-        self._send_msg(prop_name, value)
+        self._send_msg("Set", iface_name, prop_name, value)
         invocation.return_value(None)
 
     # SIGNALS
     def Seeked(self, position):
         self._conn.emit_signal(
             None,
-            "/org/mpris/MediaPlayer2",
+            self._path,
             "org.mpris.MediaPlayer2.Player",
             "Seeked",
             GLib.Variant("(x)", (position,)))
 
-    # METHODS
-    def Raise(self):
-        pass
+    def PropertiesChanged(self, changed_props):
+        if "Metadata" in changed_props:
+            changed_props["Metadata"] = (
+                self._patch_metadata(changed_props["Metadata"]))
 
-    def Quit(self):
-        pass
+        vars(self).update(changed_props)
 
-    def OpenUri(self, url):
-        pass
+        # dict.keys() is actually a set
+        base_props = (changed_props.keys() &
+                      self._properties["org.mpris.MediaPlayer2"])
+        player_props = (changed_props.keys() &
+                        self._properties["org.mpris.MediaPlayer2.Player"])
+        if base_props:
+            super().PropertiesChanged("org.mpris.MediaPlayer2", {
+                p: changed_props[p] for p in base_props}, [])
+        if player_props:
+            super().PropertiesChanged("org.mpris.MediaPlayer2.Player", {
+                p: changed_props[p] for p in player_props}, [])
 
-    def Play(self):
-        self._send_msg("Play")
-
-    def Pause(self):
-        self._send_msg("Pause")
-
-    def PlayPause(self):
-        self._send_msg("PlayPause")
-
-    def Stop(self):
-        self._send_msg("Stop")
-
-    def Seek(self, offset):
-        self._send_msg("Seek", offset)
-
-    def SetPosition(self, trackid, position):
-        if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
-            ytid = unescape_object_path(trackid[4:])
-            self._send_msg("SetPosition",
-                           {"id": ytid, "position": position})
-
-    def Next(self):
-        self._send_msg("Next")
-
-    def Previous(self):
-        self._send_msg("Prev")
-
-    def _send_msg(self, cmd, data=None):
-        msg = {
-            "tabId": self.__tabid,
-            "cmd": cmd,
+    @staticmethod
+    def _patch_metadata(metadata):
+        metadata_types = {
+            "mpris:trackid": "o",
+            "mpris:length": "x",
+            "mpris:artUrl": "s",
+            "xesam:url": "s",
+            "xesam:title": "s",
+            "xesam:artist": "as",
         }
-        if data is not None:
-            msg["data"] = data
-        encode_msg(msg)
 
-    def _handle_msg(self, msg):
-        changes = set()
+        if "mpris:trackid" in metadata:
+            metadata["mpris:trackid"] = \
+                "/ID/" + escape_object_path(metadata["mpris:trackid"])
+        return {
+            k: GLib.Variant(metadata_types[k], v) for k, v in metadata.items()
+            if k in metadata_types
+        }
 
-        for key, val in msg["data"].items():
-            if key == "id":
-                track_path = "/ID/" + escape_object_path(val)
-                self.Metadata["mpris:trackid"] = GLib.Variant("o", track_path)
-                changes.add("Metadata")
-            elif key == "mpris:length":
-                self.Metadata[key] = GLib.Variant("x", val)
-                changes.add("Metadata")
-            elif key == "xesam:artist":
-                self.Metadata[key] = GLib.Variant("as", val)
-                changes.add("Metadata")
-            elif key.startswith(("mpris:", "xesam:")):
-                self.Metadata[key] = GLib.Variant("s", val)
-                changes.add("Metadata")
+    def _send_msg(self, method, *args):
+        encode_msg({
+            "tabId": self.__tabid,
+            "method": method,
+            "args": args,
+        })
 
-            elif key == "position":
-                pass
-                # Position should *not* emit a Changed signal
-            elif key == "seekedTo":
-                self.Seeked(val)
+    def _msg_recv(self, msg):
+        if msg["type"] == "seeked":
+            self.Seeked(*msg["args"])
+        elif msg["type"] == "changed":
+            self.PropertiesChanged(*msg["args"])
 
-            else:
-                setattr(self, key, val)
-                changes.add(key)
-
-            if key in self.__callbacks:
-                for cb in self.__callbacks[key]:
-                    cb(val)
-                del self.__callbacks[key]
-
-        if "Fullscreen" in changes:
-            changes.remove("Fullscreen")
-            self.PropertiesChanged("org.mpris.MediaPlayer2",
-                                   {"Fullscreen": self.Fullscreen}, [])
-
-        if changes:
-            self.PropertiesChanged("org.mpris.MediaPlayer2.Player",
-                                   {c: getattr(self, c) for c in changes}, [])
+        elif msg["type"] == "return":
+            if msg["method"] == "Get":
+                # we only ever ask for Position
+                for cb in self.__position_callbacks:
+                    cb(msg["args"])
+                self.position_callbacks = []
 
 
-class Youtube(MediaPlayer2):
-    # FIXME:
+class YouTube(MediaPlayer2):
     __doc__ = MediaPlayer2.__doc__
 
-    def __init__(self, conn, tabid, name):
-        super().__init__(conn, tabid, name)
+    def __init__(self, conn, name, tabid):
+        self.CanQuit = False
+        self.CanRaise = False
+        self.CanSetFullscreen = False
+        self.HasTrackList = False
+        self.SupportedMimeTypes = []
+        self.SupportedUriSchemes = ["http", "https"]
+
+        self.Fullscreen = False
+        self.LoopStatus = "None"
+        self.Metadata = {}
+
+        self.PlaybackStatus = "Stopped"
+        self.Rate = 1
+        self.Shuffle = False
+        self.Volume = 1
 
         self.Identity = "youtube"
-
         self.CanControl = True
         self.CanPlay = True
         self.CanPause = True
@@ -432,12 +398,10 @@ class Youtube(MediaPlayer2):
         self.MinimumRate = 0.25
         self.MaximumRate = 2
 
-        # these are set correctly on song change
         self.CanGoNext = False
         self.CanGoPrevious = False
 
-        self.Shuffle = False
-        self.LoopStatus = "None"
+        super().__init__(conn, name, tabid)
 
 
 def main():
@@ -449,9 +413,9 @@ def main():
 
     def message_handler(chan, condition):
         msg = decode_msg()
-        debug(msg)
+        # debug(msg)
 
-        if msg["type"] not in ("update", "quit"):
+        if msg["type"] not in ("return", "changed", "seeked", "quit"):
             return True
 
         tabid = msg["tabId"]
@@ -480,22 +444,21 @@ def main():
                 # unique names
                 name += ".tab%d" % tabid
 
-            player = Youtube(conn, tabid, name)
+            player = YouTube(conn, name, tabid)
             players[tabid] = player
-
-        if msg["type"] == "update":
-            player._handle_msg(msg)
 
         if msg["type"] == "quit":
             player.unpublish()
             del players[tabid]
+        else:
+            player._msg_recv(msg)
 
         # otherwise GLib will remove our watch
         return True
 
     chan = GLib.IOChannel.unix_new(sys.stdin.fileno())
-    chan.add_watch(GLib.IOCondition.IN, message_handler)
-    chan.add_watch(GLib.IOCondition.HUP, lambda *_: mainloop.quit())
+    GLib.io_add_watch(chan, GLib.IOCondition.IN, message_handler)
+    GLib.io_add_watch(chan, GLib.IOCondition.HUP, lambda *_: mainloop.quit())
 
     mainloop.run()
 
