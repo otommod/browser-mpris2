@@ -60,6 +60,14 @@ def decode_msg():
     return json.loads(text)
 
 
+def inheritdocstring(cls):
+    for base in cls.mro():
+        if base.__doc__ is not None:
+            cls.__doc__ = base.__doc__
+            break
+    return cls
+
+
 class DBusService:
     def __init__(self, conn, name, path, flags=Gio.BusNameOwnerFlags.NONE):
         self._conn = conn
@@ -112,6 +120,7 @@ class DBusService:
         in_args, out_args = self._methods[iface_name][method_name]
 
         fd_list = invocation.get_message().get_unix_fd_list()
+        # FIXME: also handle arrays or dicts with fds
         args = [fd_list.get(a) if sig == "h" else a
                 for a, sig in zip(params.unpack(), in_args)]
 
@@ -254,11 +263,11 @@ class MediaPlayer2(DBusService):
                 def SetPosition(trackid, position):
                     if trackid != "/org/mpris/MediaPlayer2/TrackList/NoTrack":
                         self._send_msg("SetPosition",
-                                       unescape_object_path(trackid[4:]),
+                                       unescape_object_path(trackid[1:]),
                                        position)
                 return SetPosition
             return partial(self._send_msg, attr)
-        return super().__getattr__(attr)
+        return AttributeError(attr)
 
     # PROPERTIES
     def get_property(self, conn, sender, objpath, iface_name, prop_name,
@@ -271,7 +280,7 @@ class MediaPlayer2(DBusService):
                 invocation.return_value(GLib.Variant("(v)", (variant,)))
 
             self.__position_callbacks.append(callback)
-            self._send_msg("Get", "", "Position")
+            self._send_msg("Get", "org.mpris.MediaPlayer2.Player", "Position")
 
         else:
             super().get_property(conn, sender, objpath, iface_name, prop_name,
@@ -289,7 +298,7 @@ class MediaPlayer2(DBusService):
                 invocation.return_value(GLib.Variant("(a{sv})", (non_async,)))
 
             self.__position_callbacks.append(callback)
-            self._send_msg("Get", "", "Position")
+            self._send_msg("Get", "org.mpris.MediaPlayer2.Player", "Position")
 
         else:
             super().get_all_properties(conn, sender, objpath, iface_name,
@@ -341,10 +350,10 @@ class MediaPlayer2(DBusService):
 
         if "mpris:trackid" in metadata:
             metadata["mpris:trackid"] = \
-                "/ID/" + escape_object_path(metadata["mpris:trackid"])
+                "/" + escape_object_path(metadata["mpris:trackid"])
         return {
             k: GLib.Variant(metadata_types[k], v) for k, v in metadata.items()
-            if k in metadata_types
+            if k in metadata_types and v is not None
         }
 
     def _send_msg(self, method, *args):
@@ -368,10 +377,13 @@ class MediaPlayer2(DBusService):
                 self.position_callbacks = []
 
 
+@inheritdocstring
 class YouTube(MediaPlayer2):
     __doc__ = MediaPlayer2.__doc__
 
     def __init__(self, conn, name, tabid):
+        super().__init__(conn, name, tabid)
+
         self.CanQuit = False
         self.CanRaise = False
         self.CanSetFullscreen = False
@@ -401,7 +413,6 @@ class YouTube(MediaPlayer2):
         self.CanGoNext = False
         self.CanGoPrevious = False
 
-        super().__init__(conn, name, tabid)
 
 
 def main():

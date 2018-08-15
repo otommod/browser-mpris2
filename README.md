@@ -3,8 +3,9 @@ Implements the MPRIS2 interface for Chrome and Firefox.
 
 Currently, the following sites are supported with almost all of the capabilities MPRIS2 allows:
 * [YouTube](https://youtube.com)
+* [HookTube](https://hooktube.com)
 
-So, only YouTube because that's the one that I personally care about.  Pull requests are welcome.
+Pull requests are welcome.
 
 ## Installation (for Chrome)
 1. First, in Chrome, go to `Tools > Extensions` (or `chrome://extensions`), enable `Developer mode` and `Load unpacked extension...` with the root of this repo.  Notice, the extension ID.

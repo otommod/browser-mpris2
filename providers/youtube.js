@@ -303,7 +303,7 @@ function seeked(position) {
 
 function methodReturn(method, args) {
     port.postMessage({
-        source: "youtube", type: "return", method, args
+        source: "youtube", type: "return", method, args,
     });
 }
 
@@ -315,8 +315,6 @@ function quit() {
 
 
 window.addEventListener("DOMContentLoaded", e => {
-    console.log({source: "youtube", type: e.type, url: location.href});
-
     prevUrl = new URL(location);
 });
 
@@ -329,8 +327,6 @@ window.addEventListener("DOMContentLoaded", e => {
 // There's also "yt-navigate-start" which fires too early or not at all for
 // cached pages; and "yt-navigate-finish" which also fires early.
 window.addEventListener("yt-page-data-updated", e => {
-    console.log({source: "youtube", type: e.type, url: location.href});
-
     observers.forEach(obs => obs.disconnect());
     observers = [];
 
@@ -338,7 +334,7 @@ window.addEventListener("yt-page-data-updated", e => {
 
     if (!isVideo() && isVideo(prevUrl)) {
         videoElement = null;
-        quit()
+        quit();
     }
 
     if (!isVideo() || (isVideo(prevUrl) && playlist.id !== nextUrl.searchParams.get("list")))
