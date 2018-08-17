@@ -379,8 +379,6 @@ class MediaPlayer2(DBusService):
 
 @inheritdocstring
 class YouTube(MediaPlayer2):
-    __doc__ = MediaPlayer2.__doc__
-
     def __init__(self, conn, name, tabid):
         super().__init__(conn, name, tabid)
 
@@ -412,7 +410,6 @@ class YouTube(MediaPlayer2):
 
         self.CanGoNext = False
         self.CanGoPrevious = False
-
 
 
 def main():
