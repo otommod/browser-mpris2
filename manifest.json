@@ -14,11 +14,6 @@
       "matches": ["*://*.youtube.com/*", "*://youtube.com/*"],
       "js": ["jquery.min.js", "providers/youtube.js"],
       "run_at": "document_start"
-    },
-    {
-      "matches": ["*://*.hooktube.com/*", "*://hooktube.com/*"],
-      "js": ["providers/hooktube.js"],
-      "run_at": "document_start"
     }
   ],
 
