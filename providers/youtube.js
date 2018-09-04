@@ -139,8 +139,8 @@ function enterVideo() {
     // that, but let's respect it by lying to MPRIS!
     video.Volume = 1;
 
-    video.CanGoNext = ($(".ytp-next-button").attr("aria-disabled") == "false");
-    video.CanGoPrevious= ($(".ytp-prev-button").attr("aria-disabled") == "false");
+    video.CanGoNext = ($(".ytp-next-button").attr("aria-disabled") === "false");
+    video.CanGoPrevious= ($(".ytp-prev-button").attr("aria-disabled") === "false");
 
     video.Rate = videoElement.playbackRate;
 
@@ -214,19 +214,17 @@ const COMMANDS = {
 
     Next() {
         let nextBtn = $(".ytp-next-button");
-        if(nextBtn.attr("aria-disabled") == "false") {
+        if (nextBtn.attr("aria-disabled") === "false")
             nextBtn.get(0).click();
-        }
     },
     Previous() {
         let prevBtn = $(".ytp-prev-button");
-        if(prevBtn.attr("aria-disabled") == "false") {
-            if (videoElement.currentTime > 2) {
+        if (prevBtn.attr("aria-disabled") === "false") {
+            if (videoElement.currentTime > 2)
                 // if the video is past its 2nd second pressing prev will start
                 // it from the beginning again, so we need to press twice with
                 // a bit of a delay between
                 setTimeout(() => prevBtn.get(0).click(), 100);
-            }
             prevBtn.get(0).click();
         }
     },
