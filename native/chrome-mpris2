@@ -412,12 +412,53 @@ class YouTube(MediaPlayer2):
         self.CanGoPrevious = False
 
 
+@inheritdocstring
+class SoundCloud(MediaPlayer2):
+    def __init__(self, conn, name, tabid):
+        super().__init__(conn, name, tabid)
+
+        self.CanQuit = False
+        self.CanRaise = False
+        self.CanSetFullscreen = False
+        self.HasTrackList = False
+        self.SupportedMimeTypes = []
+        self.SupportedUriSchemes = ["http", "https"]
+
+        self.Fullscreen = False
+        self.LoopStatus = "None"
+        self.Metadata = {}
+
+        self.PlaybackStatus = "Stopped"
+        self.Rate = 1
+        self.Shuffle = False
+        self.Volume = 1
+
+        self.Identity = "soundcloud"
+        self.CanControl = True
+        self.CanPlay = True
+        self.CanPause = True
+        self.CanSeek = False
+        self.CanSetFullscreen = False
+
+        self.MinimumRate = 1
+        self.MaximumRate = 1
+
+        self.CanGoNext = False
+        self.CanGoPrevious = False
+
+
+players = {
+    "youtube": YouTube,
+    "soundcloud": SoundCloud,
+}
+
+
 def main():
     mainloop = GLib.MainLoop()
 
     make_streams_binary()
 
-    players = {}
+    active_players = {}
 
     def message_handler(chan, condition):
         msg = decode_msg()
@@ -429,7 +470,7 @@ def main():
         tabid = msg["tabId"]
 
         try:
-            player = players[tabid]
+            player = active_players[tabid]
         except KeyError:
             # Many terrible things can happen to tabs; they can crash or be
             # discarded.  For these cases out background.js should still inform
@@ -447,17 +488,22 @@ def main():
             conn.set_exit_on_close(True)
 
             name = "org.mpris.MediaPlayer2.chrome"
-            if players:
+            if active_players:
                 # if we are exposing more than one player we need to give them
                 # unique names
                 name += ".tab%d" % tabid
 
-            player = YouTube(conn, name, tabid)
-            players[tabid] = player
+            # malformed message
+            if "source" not in msg or msg["source"] not in players:
+                return True
+
+            player_class = players[msg["source"]]
+            player = player_class(conn, name, tabid)
+            active_players[tabid] = player
 
         if msg["type"] == "quit":
             player.unpublish()
-            del players[tabid]
+            del active_players[tabid]
         else:
             player._msg_recv(msg)
 
