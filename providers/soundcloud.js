@@ -20,11 +20,10 @@ function monkeypatchCreateElement() {
         delete msg.data.id;
         msg.data.source = "soundcloud";
         if (msg.data.type === "durationchange") {
-            // changed({
-            //     Metadata: {
-            //         "mpris:length": msg.data.args[0],
-            //     },
-            // });
+            // SoundCloud sets blobs as src; if you seek past what's currently
+            // downloaded, a new blob is created, its duration the time
+            // remaining in the song from the point where you seeked.  Not
+            // cool.
         } else {
             port.postMessage(msg.data);
         }
@@ -49,17 +48,18 @@ function monkeypatchCreateElement() {
             if (typeof tagName === "string" && tagName.toLowerCase() === "audio") {
                 console.log("<audio>", createdTag);
 
-                // window.addEventListener("message", msg => {
-                //     if (msg.data.id !== "${messageID}")
-                //         return;
-                //     delete msg.data.id;
-                // });
-
                 const eventHandlers = {
                     play() { changed({ PlaybackStatus: "Playing" }); },
                     playing() { changed({ PlaybackStatus: "Playing" }); },
                     pause() { changed({ PlaybackStatus: "Paused" }); },
                     ended() { changed({ PlaybackStatus: "Stopped" }); },
+
+                    // when the media has become empty e.g. if it's reloaded
+                    // SoundCloud seems to load a new blob on pause and that
+                    // stops the pause event from firing, since the media is
+                    // reloaded and autoplay is not set so it just doesn't
+                    // start which is different from pausing
+                    emptied() { changed({ PlaybackStatus: "Paused" }); },
 
                     // when a seek operation completes
                     seeked(e) { seeked(Math.trunc(e.target.currentTime * 1e6)); },
@@ -72,7 +72,12 @@ function monkeypatchCreateElement() {
 
                     // when the audio volume changes or is muted
                     volumechange(e) { changed({ Volume: e.target.muted ? 0.0 : e.target.volume }); },
+
                 };
+
+                // we could control playback directly through the element since
+                // we have a reference to it but that skips some kind of
+                // buffering logic so sometimes it just doesn't work
 
                 for (let [event, handler] of Object.entries(eventHandlers))
                     createdTag.addEventListener(event, handler);
@@ -235,7 +240,8 @@ const COMMANDS = {
             break;
 
         case "LoopStatus":
-            while (newValue !== getLoopStatus())
+            let maxLoops = 5;
+            while (newValue !== getLoopStatus() && maxLoops-- > 0)
                 document.querySelector(".repeatControl").click();
             break;
         }
@@ -251,6 +257,7 @@ const COMMANDS = {
         isPlaying() ? this.Pause() : this.Play();
     },
     Stop() {
+        // this is the most we can do
         this.Pause();
     },
 
@@ -261,13 +268,13 @@ const COMMANDS = {
     Previous() {
         const skipControl = document.querySelector(".skipControl__previous");
         if (getPosition() > 5e6)
-            // if the video is past its 5th second pressing prev will start
-            // it from the beginning again, so we need to press twice with
-            // a bit of a delay between
+            // if the song is past its 5th second pressing previous will start
+            // it from the beginning again, so we need to press twice
             skipControl.click();
         skipControl.click();
     },
 
+    // we don't support seeking, I couldn't get it to work
     Seek(offset) { },
     SetPosition(id, position) { },
 }
@@ -299,7 +306,7 @@ function methodReturn(method, args) {
 }
 
 
-// we don't wait for DOMContentsLoaded; we need to make sure that we capture
+// we don't wait for DOMContentLoaded; we need to make sure that we capture
 // any potential creation of elements
 monkeypatchCreateElement();
 
