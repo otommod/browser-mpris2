@@ -10,6 +10,8 @@ XDG_CONFIG_HOME = os.environ.get("XDG_CONFIG_HOME",
 BROWSERS = [
     os.path.join(XDG_CONFIG_HOME, "chromium"),
     os.path.join(XDG_CONFIG_HOME, "google-chrome"),
+    os.path.join(XDG_CONFIG_HOME, "opera"),
+    os.path.join(XDG_CONFIG_HOME, "BraveSoftware/Brave-Browser"),
 ]
 
 

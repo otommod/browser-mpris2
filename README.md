@@ -1,5 +1,5 @@
 # browser-mpris2
-Implements the MPRIS2 interface for Chrome and Firefox.
+Implements the MPRIS2 interface for Chromium-based (Chrome, Opera, Brave) and Firefox browsers.
 
 Currently, the following sites are supported with almost all of the capabilities MPRIS2 allows:
 * [YouTube](https://youtube.com)
@@ -7,9 +7,9 @@ Currently, the following sites are supported with almost all of the capabilities
 
 Pull requests are welcome.
 
-## Installation (for Chrome)
-1. First, in Chrome, go to `Tools > Extensions` (or `chrome://extensions`), enable `Developer mode` and `Load unpacked extension...` with the root of this repo.  Notice, the extension ID.
-2. Next, place [chrome-mpris2](native/chrome-mpris2) somewhere in your `$PATH` and run [install-chrome.py](native/install-chrome.py) giving it the extension ID and optionally the path (not just the directory) of your just-installed chrome-mpris2 (defaults to `~/bin/chrome-mpris2`).  This will check that you have all the dependencies and tell Chrome about chrome-mpris2 (so that the plugin can use it).
+## Installation (for Chromium-based)
+1. First, in the browser, go to `Tools > Extensions` (or `about://extensions`), enable `Developer mode` and `Load unpacked extension...` with the root of this repo.  Notice, the extension ID.
+2. Next, place [chrome-mpris2](native/chrome-mpris2) somewhere in your `$PATH` and run [install-chrome.py](native/install-chrome.py) giving it the extension ID and optionally the path (not just the directory) of your just-installed chrome-mpris2 (defaults to `~/bin/chrome-mpris2`).  This will check that you have all the dependencies and tell the browser about chrome-mpris2 (so that the plugin can use it).
 3. ???
 4. Profit
 
